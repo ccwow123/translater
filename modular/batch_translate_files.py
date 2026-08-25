@@ -23,9 +23,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from translator.constants import LANG_NAMES, LANG_CODE, build_system_prompt
-from translator.core.preserve import preserve_translate
-from translator.backends import openai_compat
+from src.constants import LANG_NAMES, LANG_CODE, build_system_prompt
+from src.core.preserve import preserve_translate
+from src.backends import openai_compat
 
 TEXT_EXTS = (".md", ".txt", ".json", ".markdown", ".text")
 
@@ -65,7 +65,7 @@ def make_translate_fn(params, to_lang_name):
             sys_prompt, text, max_tokens=params["max_tokens"])
         if not ok:
             raise RuntimeError(raw)
-        from translator.constants import strip_fences
+        from src.constants import strip_fences
         return strip_fences(raw)
     return tf
 

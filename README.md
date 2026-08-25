@@ -25,7 +25,7 @@ E:/Files/translater/
 ├── requirements.txt       依赖清单（本项目为零第三方 pip 依赖）
 ├── README.md              本文档（运行与使用说明 + 导出规范）
 ├── modular/               模块化重构版（现行主程序）
-│   └── translator/
+│   └── src/               可复用包（src = translator 新名，避免与根目录同名）
 │       ├── ui/            主窗口 app.py、双向编辑器 editor.py、主题 theme.py
 │       ├── backends/      各平台后端（baidu / siliconflow / lmstudio / tencent / alicloud / caiyun / openai_compat）
 │       ├── core/          preserve 排版翻译 / glossary 术语 / llm_json / batch

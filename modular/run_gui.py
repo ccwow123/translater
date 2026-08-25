@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tkinter as tk
 from tkinter import ttk
 
-from translator.ui.app import TranslateApp
+from src.ui.app import TranslateApp
 
 
 def main():

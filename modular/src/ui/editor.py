@@ -15,6 +15,7 @@ from src.constants import (BG, FG, MUTED, ACCENT, ACCENT_DARK, ACCENT_LIGHT,
                                   BORDER, HEADER_BG, STATUS_BG, LANG_NAMES)
 from src.core.preserve import preserve_translate
 from src.ui.theme import StyleKit
+from src.ui import wordalign as wa
 
 
 class BidirectionalEditor(tk.Toplevel):
@@ -39,6 +40,7 @@ class BidirectionalEditor(tk.Toplevel):
         self.q = queue.Queue()
         self.busy = False
         self._by_sentence = True  # 默认按句子；遇到 Markdown 源会自动切回段落
+        self._focus_text = None   # 最近聚焦的原文/译文文本框
 
         StyleKit(self)
         self._build_ui()
@@ -59,9 +61,7 @@ class BidirectionalEditor(tk.Toplevel):
             ("句子分段", self._toggle_sentence, None),
             ("翻译", self._retranslate_all, "Accent.TButton"),
             ("反向翻译", self._reverse_all, "Accent.TButton"),
-            ("校验", self._validate, None),
             ("保存/导出", self._export, None),
-            ("关闭", self.destroy, None),
         ]
         self._toolbar_btns = []
         for text, cmd, style in self._toolbar_items:
@@ -130,6 +130,72 @@ class BidirectionalEditor(tk.Toplevel):
 
     def _bind_global_wheel(self, widget):
         widget.bind("<MouseWheel>", self._canvas_scroll)
+
+    def _remember_focus(self, event):
+        self._focus_text = event.widget
+
+    # ---------------------------------------------------- 词对齐（悬停对照）
+    def _word_tokens(self, text):
+        return wa.word_tokens(text)
+
+    def _align_tokens(self, src, dst):
+        return wa.align_tokens(src, dst)
+
+    def _char_to_index(self, text, offset):
+        return wa.char_to_index(text, offset)
+
+    def _index_to_char(self, text, tk_index):
+        return wa.index_to_char(text, tk_index)
+
+    def _token_at(self, toks, char):
+        return wa.token_at(toks, char)
+
+    def _locate_card(self, widget):
+        for card in self.cards:
+            if widget is card["src_text"]:
+                return card, "src"
+            if widget is card["dst_text"]:
+                return card, "dst"
+        return None, None
+
+    _LINK = "#9FC1FF"
+
+    def _on_hover(self, event):
+        """悬停某词 → 高亮对侧对应词，同时自身亮起作即时反馈。"""
+        card, side = self._locate_card(event.widget)
+        if not card:
+            return
+        w = event.widget
+        card["src_text"].tag_remove("link", "1.0", "end")
+        card["dst_text"].tag_remove("link", "1.0", "end")
+        oth = card["dst_text"] if side == "src" else card["src_text"]
+        cur_toks = card["src_toks"] if side == "src" else card["dst_toks"]
+        oth_toks = card["dst_toks"] if side == "src" else card["src_toks"]
+        cur_text = card["seg_text"]["src"] if side == "src" else card["seg_text"]["dst"]
+        oth_text = card["seg_text"]["dst"] if side == "src" else card["seg_text"]["src"]
+        try:
+            idx = w.index("@%d,%d" % (event.x, event.y))
+        except (tk.TclError, ValueError):
+            return
+        char = self._index_to_char(cur_text, idx)
+        tid = self._token_at(cur_toks, char)
+        if tid is None:
+            return
+        st, en, _ = cur_toks[tid]
+        w.tag_add("link", self._char_to_index(cur_text, st),
+                  self._char_to_index(cur_text, en))   # 自身即时反馈
+        for idx2 in card["aligned"].get(tid, []) if side == "src" else card["dst_to_src"].get(tid, []):
+            if idx2 >= len(oth_toks):
+                continue
+            s2, e2, _ = oth_toks[idx2]
+            oth.tag_add("link", self._char_to_index(oth_text, s2),
+                        self._char_to_index(oth_text, e2))
+
+    def _on_leave(self, event):
+        card, _ = self._locate_card(event.widget)
+        if card:
+            card["src_text"].tag_remove("link", "1.0", "end")
+            card["dst_text"].tag_remove("link", "1.0", "end")
 
     # ------------------------------------------------------------ 数据
     def _split_paragraphs(self, text):
@@ -251,34 +317,6 @@ class BidirectionalEditor(tk.Toplevel):
 
     def _count_sentences(self, text):
         return len(self._sentence_pieces(text))
-
-    def _validate(self):
-        """校验原文与译文：找出漏译段，并提示译文句数远少于原文的疑似缺失段。"""
-        self._sync_from_widgets()
-        missing = []       # 原文非空、译文为空 → 漏译
-        suspicious = []    # 译文句数远少于原文 → 疑似内容压缩/缺失
-        for i, seg in enumerate(self.segments, start=1):
-            src = seg["src"].strip()
-            dst = seg["dst"].strip()
-            if not src and not dst:
-                continue
-            if src and not dst:
-                missing.append(i)
-                continue
-            ns = self._count_sentences(src)
-            nd = self._count_sentences(dst)
-            if ns >= 2 and nd < max(1, ns // 2):
-                suspicious.append(i)
-        lines = ["校验结果：共 %d 段" % len(self.segments)]
-        lines.append("· 漏译（原文非空、译文为空）：%s"
-                     % ("、".join(map(str, missing)) if missing else "无 ✓"))
-        lines.append("· 疑似内容缺失（译文句子数不到原文一半）：%s"
-                     % ("、".join(map(str, suspicious)) if suspicious else "无 ✓"))
-        if not missing and not suspicious:
-            lines.append("")
-            lines.append("整体通过：无漏译、无明显内容缺失。")
-        self.status_var.set("已校验：%d 段" % len(self.segments))
-        messagebox.showinfo("原文 / 译文校验", "\n".join(lines))
 
     def _automatch_translation(self, src_path):
         """在同目录探测与原文配对的译文文件（如 a.md ↔ a-中文翻译.md）。"""
@@ -454,6 +492,8 @@ class BidirectionalEditor(tk.Toplevel):
         StyleKit(self).style_text(dst_text)
         self._bind_global_wheel(src_text)
         self._bind_global_wheel(dst_text)
+        src_text.bind("<FocusIn>", self._remember_focus)
+        dst_text.bind("<FocusIn>", self._remember_focus)
         src_text.grid(row=2, column=0, sticky="nsew", padx=2)
         dst_text.grid(row=2, column=2, sticky="nsew", padx=2)
 
@@ -465,7 +505,35 @@ class BidirectionalEditor(tk.Toplevel):
         src_text.insert("1.0", seg["src"])
         dst_text.insert("1.0", seg["dst"])
 
-        self.cards.append({"frame": card, "src_text": src_text, "dst_text": dst_text})
+        src_toks = self._word_tokens(seg["src"])
+        dst_toks = self._word_tokens(seg["dst"])
+        for s, e, _ in src_toks:
+            src_text.tag_add("sw", self._char_to_index(seg["src"], s),
+                            self._char_to_index(seg["src"], e))
+        for s, e, _ in dst_toks:
+            dst_text.tag_add("dw", self._char_to_index(seg["dst"], s),
+                            self._char_to_index(seg["dst"], e))
+        aligned = self._align_tokens([t[2] for t in src_toks],
+                                     [t[2] for t in dst_toks])
+        dst_to_src = {}
+        for si, djs in aligned.items():
+            for dj in djs:
+                dst_to_src[dj] = si
+        src_text.bind("<Enter>", self._on_hover)
+        dst_text.bind("<Enter>", self._on_hover)
+        src_text.bind("<Motion>", self._on_hover)
+        dst_text.bind("<Motion>", self._on_hover)
+        src_text.bind("<Leave>", self._on_leave)
+        dst_text.bind("<Leave>", self._on_leave)
+        src_text.tag_config("link", background=self._LINK)
+        dst_text.tag_config("link", background=self._LINK)
+
+        self.cards.append({
+            "frame": card, "src_text": src_text, "dst_text": dst_text,
+            "seg_text": {"src": seg["src"], "dst": seg["dst"]},
+            "src_toks": src_toks, "dst_toks": dst_toks,
+            "aligned": aligned, "dst_to_src": dst_to_src,
+        })
 
     def _find_index(self, seg):
         try:

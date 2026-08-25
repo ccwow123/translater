@@ -76,6 +76,7 @@ from src.backends.tencent import DEFAULT_REGION as TENCENT_REGION
 from src.backends.alicloud import translate_one as alicloud_translate_one
 from src.backends.caiyun import translate_one as caiyun_translate_one
 from src.core.preserve import preserve_translate, segment_counts
+from src.ui import wordalign as wa
 import src.utils.secure as secure_store
 
 
@@ -361,6 +362,7 @@ class TranslateApp:
         in_frame.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
         self.in_text = tk.Text(in_frame, wrap="word", height=9, font=("Microsoft YaHei UI", 10))
         kit.style_text(self.in_text)
+        self._link_tag("in")
         self.in_text.pack(fill="both", expand=True, padx=6, pady=6)
 
         btn_frame = ttk.Frame(mid)
@@ -380,6 +382,7 @@ class TranslateApp:
         out_frame.grid(row=2, column=0, sticky="nsew", padx=2, pady=2)
         self.out_text = tk.Text(out_frame, wrap="word", height=9, font=("Microsoft YaHei UI", 10))
         kit.style_text(self.out_text)
+        self._link_tag("out")
         self.out_text.pack(fill="both", expand=True, padx=6, pady=6)
         ttk.Button(out_frame, text="保存到文件", command=self._save_file).pack(anchor="e", padx=6, pady=6)
 
@@ -1452,6 +1455,70 @@ class TranslateApp:
         stem, ext = os.path.splitext(os.path.basename(self.loaded_path))
         lang = self.to_var.get().strip() or "中文"
         return os.path.join(d, "%s-%s翻译%s" % (stem, lang, ext))
+
+    # ---------------------------------------------------- 主界面悬停词对照
+    def _link_tag(self, side):
+        """给某一侧文本框配置悬停对照 tag 与事件绑定。"""
+        w = self.in_text if side == "in" else self.out_text
+        w.tag_config("mlink", background="#C9DFFF")
+        w.bind("<Enter>", self._main_hover)
+        w.bind("<Motion>", self._main_hover)
+        w.bind("<Leave>", self._main_leave)
+
+    def _link_refresh(self):
+        if not getattr(self, "_LINK_CACHE", None):
+            self._LINK_CACHE = {"in_txt": None, "out_txt": None, "in_toks": [],
+                                "out_toks": [], "aligned": {}, "rev": {}}
+        it = self.in_text.get("1.0", "end-1c")
+        ot = self.out_text.get("1.0", "end-1c")
+        if it == self._LINK_CACHE["in_txt"] and ot == self._LINK_CACHE["out_txt"]:
+            return
+        ins = wa.word_tokens(it)
+        outs = wa.word_tokens(ot)
+        aligned = wa.align_tokens([t[2] for t in ins], [u[2] for u in outs])
+        rev = {}
+        for i, js in aligned.items():
+            for j in js:
+                rev.setdefault(j, []).append(i)
+        self._LINK_CACHE.update(in_txt=it, out_txt=ot, in_toks=ins,
+                                out_toks=outs, aligned=aligned, rev=rev)
+
+    def _main_hover(self, event):
+        self._link_refresh()
+        self.in_text.tag_remove("mlink", "1.0", "end")
+        self.out_text.tag_remove("mlink", "1.0", "end")
+        w = event.widget
+        if w is self.in_text:
+            text, toks, oth, oth_txt, oth_toks, mp = (
+                self._LINK_CACHE["in_txt"], self._LINK_CACHE["in_toks"],
+                self.out_text, self._LINK_CACHE["out_txt"], self._LINK_CACHE["out_toks"],
+                self._LINK_CACHE["aligned"])
+        elif w is self.out_text:
+            text, toks, oth, oth_txt, oth_toks, mp = (
+                self._LINK_CACHE["out_txt"], self._LINK_CACHE["out_toks"],
+                self.in_text, self._LINK_CACHE["in_txt"], self._LINK_CACHE["in_toks"],
+                self._LINK_CACHE["rev"])
+        else:
+            return
+        try:
+            tk_idx = w.index("@%d,%d" % (event.x, event.y))
+        except Exception:
+            return
+        char = wa.index_to_char(text, tk_idx)
+        tid = wa.token_at(toks, char)
+        if tid is None:
+            return
+        st, en, _ = toks[tid]
+        w.tag_add("mlink", wa.char_to_index(text, st), wa.char_to_index(text, en))
+        for j in mp.get(tid, []):
+            if j >= len(oth_toks):
+                continue
+            s2, e2, _ = oth_toks[j]
+            oth.tag_add("mlink", wa.char_to_index(oth_txt, s2), wa.char_to_index(oth_txt, e2))
+
+    def _main_leave(self, event):
+        self.in_text.tag_remove("mlink", "1.0", "end")
+        self.out_text.tag_remove("mlink", "1.0", "end")
 
     def _save_file(self):
         content = self.out_text.get("1.0", "end-1c")

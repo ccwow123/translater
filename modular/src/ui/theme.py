@@ -13,6 +13,9 @@ from src.constants import (BG, FG, ACCENT, ACCENT_DARK, ACCENT_LIGHT,
 class StyleKit:
     """统一管理 root 容器与 ttk 控件样式。"""
 
+    FONT = ("Microsoft YaHei UI", 10)
+    FONT_BOLD = ("Microsoft YaHei UI", 10, "bold")
+
     def __init__(self, root):
         self.root = root
         self.root.configure(bg=BG)
@@ -22,33 +25,35 @@ class StyleKit:
         except Exception:
             pass
         style.configure(".", background=BG, foreground=FG,
-                        font=("Microsoft YaHei UI", 10))
+                        font=self.FONT)
         style.configure("TFrame", background=BG)
-        style.configure("TLabel", background=BG, foreground=FG)
+        style.configure("TLabel", background=BG, foreground=FG, font=self.FONT)
         style.configure("TLabelframe", background=BG, bordercolor=BORDER,
                         relief="solid", borderwidth=1)
         style.configure("TLabelframe.Label", background=BG, foreground=ACCENT,
-                        font=("Microsoft YaHei UI", 10, "bold"))
-        style.configure("TButton", font=("Microsoft YaHei UI", 10),
+                        font=self.FONT_BOLD)
+        style.configure("TButton", font=self.FONT,
                         padding=(10, 5))
         style.map("TButton",
                   background=[("active", ACCENT_LIGHT)],
                   bordercolor=[("active", ACCENT)])
         style.configure("Accent.TButton", background=ACCENT, foreground="white",
-                        font=("Microsoft YaHei UI", 10, "bold"))
+                        font=self.FONT_BOLD)
         style.map("Accent.TButton",
                   background=[("active", ACCENT_DARK), ("disabled", "#a9b7d6")],
                   foreground=[("disabled", "#eef2fb")])
         style.configure("TCombobox", fieldbackground="white", background="white",
                         arrowcolor=ACCENT, bordercolor=BORDER,
-                        lightcolor=BORDER, darkcolor=BORDER)
+                        lightcolor=BORDER, darkcolor=BORDER,
+                        font=self.FONT)
         style.map("TCombobox", fieldbackground=[("readonly", "white")])
         style.configure("TEntry", fieldbackground="white", bordercolor=BORDER,
-                        lightcolor=BORDER, darkcolor=BORDER)
-        style.configure("TCheckbutton", background=BG, foreground=FG)
+                        lightcolor=BORDER, darkcolor=BORDER,
+                        font=self.FONT)
+        style.configure("TCheckbutton", background=BG, foreground=FG, font=self.FONT)
         style.map("TCheckbutton", background=[("active", BG)])
 
-    def style_text(self, widget, padx=8, pady=8, font=("Microsoft YaHei UI", 10)):
+    def style_text(self, widget, padx=8, pady=8, font=FONT):
         """给 tk.Text 统一外观。"""
         widget.configure(bg="white", fg=FG, insertbackground=ACCENT, relief="flat",
                          highlightthickness=1, highlightbackground=BORDER,

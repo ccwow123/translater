@@ -253,11 +253,10 @@ class TranslateApp:
         ttk.Label(top, text="源语言:").pack(side="left", padx=(14, 2))
         ttk.Combobox(top, textvariable=self.from_var, values=LANG_OPTIONS,
                      state="readonly", width=6).pack(side="left")
-        ttk.Label(top, text="目标语言:").pack(side="left", padx=(8, 2))
+        ttk.Button(top, text="⇄", width=3, command=self._swap_langs).pack(side="left", padx=(6, 2))
+        ttk.Label(top, text="目标语言:").pack(side="left", padx=(4, 2))
         ttk.Combobox(top, textvariable=self.to_var, values=LANG_OPTIONS,
                      state="readonly", width=6).pack(side="left")
-        ttk.Label(top, text="最大输出token:").pack(side="left", padx=(14, 2))
-        ttk.Entry(top, textvariable=self.max_tokens_var, width=8).pack(side="left")
         ttk.Button(top, text="清除配置", command=self._clear_config).pack(side="right")
         ttk.Button(top, text="保存配置", command=self._save_config).pack(side="right", padx=(0, 8))
         ttk.Button(top, text="管理自定义平台", command=self._manage_custom).pack(side="right", padx=(0, 8))
@@ -347,8 +346,12 @@ class TranslateApp:
         sys_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
         self.sys_text = tk.Text(sys_frame, wrap="word", height=3, font=("Microsoft YaHei UI", 9))
         kit.style_text(self.sys_text, font=("Microsoft YaHei UI", 9))
-        self.sys_text.pack(fill="both", expand=True, padx=6, pady=6)
-        ttk.Button(sys_frame, text="恢复默认", command=self._reset_system_prompt).pack(anchor="e", padx=6, pady=(0, 6))
+        self.sys_text.pack(fill="both", expand=True, padx=6, pady=(6, 2))
+        token_row = ttk.Frame(sys_frame)
+        token_row.pack(fill="x", padx=6, pady=(0, 6))
+        ttk.Label(token_row, text="最大输出token:").pack(side="left")
+        ttk.Entry(token_row, textvariable=self.max_tokens_var, width=8).pack(side="left", padx=(4, 8))
+        ttk.Button(token_row, text="恢复默认", command=self._reset_system_prompt).pack(side="right")
 
         # 中间自适应区：输入 / 按钮 / 输出 按比例伸缩
         mid = ttk.Frame(self.root)
@@ -1515,6 +1518,13 @@ class TranslateApp:
                 continue
             s2, e2, _ = oth_toks[j]
             oth.tag_add("mlink", wa.char_to_index(oth_txt, s2), wa.char_to_index(oth_txt, e2))
+
+    def _swap_langs(self):
+        """交换源语言与目标语言的值。"""
+        f = self.from_var.get().strip()
+        t = self.to_var.get().strip()
+        self.from_var.set(t or "中文")
+        self.to_var.set(f or "中文")
 
     def _main_leave(self, event):
         self.in_text.tag_remove("mlink", "1.0", "end")

@@ -169,6 +169,7 @@ class TranslateApp:
         self.batch_tree = None
         self.batch_pause_btn = None
         self.batch_stop_btn = None
+        self.batch_start_btn = None
         self.batch_status_var = None
         self.loaded_path = None
 
@@ -177,6 +178,8 @@ class TranslateApp:
         self.from_var = tk.StringVar(value="日文")
         self.to_var = tk.StringVar(value="中文")
         self.max_tokens_var = tk.StringVar(value="8192")
+        self.retry_var = tk.StringVar(value="3")      # 单文件块级失败重试次数
+        self.parallel_var = tk.StringVar(value="1")   # 批量并行文件数（LLM 平台生效）
 
         # 百度
         self.baidu_appid = tk.StringVar(value=os.environ.get("BAIDU_TRANS_APPID", ""))
@@ -351,7 +354,11 @@ class TranslateApp:
         token_row.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Label(token_row, text="最大输出token:").pack(side="left")
         ttk.Entry(token_row, textvariable=self.max_tokens_var, width=8).pack(side="left", padx=(4, 8))
-        ttk.Button(token_row, text="恢复默认", command=self._reset_system_prompt).pack(side="right")
+        ttk.Label(token_row, text="失败重试:").pack(side="left")
+        ttk.Entry(token_row, textvariable=self.retry_var, width=4, justify="center").pack(side="left", padx=(4, 8))
+        ttk.Button(token_row, text="恢复默认", command=self._reset_system_prompt).pack(side="right",
+                   padx=(8, 0))
+        ttk.Label(token_row, text="断点续传已启用", foreground=MUTED).pack(side="right")
 
         # 中间自适应区：输入 / 按钮 / 输出 按比例伸缩
         mid = ttk.Frame(self.root)
@@ -1213,14 +1220,45 @@ class TranslateApp:
                                    % (len(missing), preview, extra))
 
     def _queue_batch(self, files):
-        """收集待翻译文件，等待用户点击「翻译并导出」后一起执行。"""
+        """收集待翻译文件后，立即弹出批量窗口供配置，等窗口内「翻译」按钮才执行。"""
         if not files:
-            if not self._pending_batch:
-                messagebox.showinfo("批量翻译", "没有找到可翻译的文件。")
+            messagebox.showinfo("批量翻译", "没有找到可翻译的文件。")
             return
         self._pending_batch[:] = files
-        self.status_var.set("已添加 %d 个待翻译文件，点击「翻译并导出」开始批量翻译" % len(files))
-        log.info("批量翻译待处理列表就绪: %d 个文件", len(files))
+        self._open_batch_pending()
+        log.info("批量翻译待处理列表就绪并弹出窗口: %d 个文件", len(files))
+
+    def _open_batch_pending(self):
+        """展示待翻译文件窗口，等待用户在窗口内配置并点击「翻译」。"""
+        win = self._get_batch_window()
+        try:
+            win.deiconify()
+            win.lift()
+        except Exception:
+            pass
+        win.title("批量文件队列（待配置）")
+        self._init_batch_queue(self._pending_batch)
+        if self.batch_status_var is not None:
+            self.batch_status_var.set("已加载 %d 个文件，配置好后点击「翻译」开始"
+                                      % len(self._pending_batch))
+        if self.batch_start_btn is not None:
+            self.batch_start_btn.config(state="normal", text="翻译")
+        for btn in (self.batch_pause_btn, self.batch_stop_btn):
+            if btn is not None:
+                btn.config(state="disabled")
+
+    def _start_batch_now(self):
+        """批量窗口内的「翻译」按钮：正式启动本次批量翻译。"""
+        if self.busy:
+            return
+        if not self._pending_batch:
+            messagebox.showinfo("提示", "没有待翻译文件")
+            return
+        if self.batch_start_btn is not None:
+            self.batch_start_btn.config(state="disabled")
+        files = list(self._pending_batch)
+        self._pending_batch[:] = []
+        self._run_batch(files)
 
     def _run_batch(self, files):
         if not files:
@@ -1252,6 +1290,13 @@ class TranslateApp:
         win = self._get_batch_window()
         self.batch_pause_btn.config(state="normal", text="暂停")
         self.batch_stop_btn.config(state="normal")
+        self._batch_t0 = time.time()
+        self._batch_current = ""
+        try:
+            self._get_batch_window().title("批量文件队列（翻译中，并行数 %d）"
+                                           % self._effective_parallel(backend))
+        except Exception:
+            pass
         self.status_var.set("批量翻译 %d 个文件…（%s）" % (len(files), backend))
         log.info("批量翻译开始: %d 个文件, backend=%s, lang=%s, model=%s",
                  len(files), backend, lang, params.get("model", ""))
@@ -1267,8 +1312,8 @@ class TranslateApp:
         win = tk.Toplevel(self.root)
         win.title("批量文件队列")
         win.configure(bg=BG)
-        win.geometry("680x460")
-        win.minsize(500, 320)
+        win.geometry("900x540")
+        win.minsize(680, 420)
         try:
             win.transient(self.root)
         except Exception:
@@ -1281,8 +1326,8 @@ class TranslateApp:
                             selectmode="none", height=10)
         tree.heading("#0", text="文件")
         tree.heading("status", text="状态")
-        tree.column("#0", width=470, anchor="w")
-        tree.column("status", width=110, anchor="center")
+        tree.column("#0", width=680, anchor="w")
+        tree.column("status", width=130, anchor="center")
         tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(inner, orient="vertical", command=tree.yview)
         sb.pack(side="right", fill="y")
@@ -1298,6 +1343,12 @@ class TranslateApp:
         self.batch_status_var = tk.StringVar(value="就绪")
         tk.Label(bar, textvariable=self.batch_status_var, bg=BG, fg=FG,
                  font=("Microsoft YaHei UI", 10, "bold")).pack(side="left", padx=4)
+        ttk.Label(bar, text="并行数:").pack(side="left", padx=(16, 2))
+        ttk.Combobox(bar, textvariable=self.parallel_var, values=("1", "2", "3", "4"),
+                     state="readonly", width=3).pack(side="left")
+        start = ttk.Button(bar, text="翻译", style="Accent.TButton",
+                           command=self._start_batch_now, state="disabled")
+        start.pack(side="right", padx=4)
         pause = ttk.Button(bar, text="暂停", command=self._toggle_pause, state="disabled")
         pause.pack(side="right", padx=4)
         stop = ttk.Button(bar, text="停止", command=self._cancel, state="disabled")
@@ -1308,15 +1359,17 @@ class TranslateApp:
         self.batch_tree = tree
         self.batch_pause_btn = pause
         self.batch_stop_btn = stop
+        self.batch_start_btn = start
         return win
 
     def _close_batch_window(self):
-        """关闭批量窗口：翻译进行中不允许关闭，结束后可直接关闭。"""
+        """关闭批量窗口：翻译进行中不允许关闭；待配置阶段关闭则作废本批待翻译文件。"""
         if self.busy:
             self.batch_status_var.set("翻译进行中，无法关闭；可先停止")
             return
         self.batch_win.destroy()
         self.batch_win = None
+        self._pending_batch[:] = []
 
     def _init_batch_queue(self, files):
         """初始化批量文件队列窗口，全部标记为待处理并显示。"""
@@ -1389,66 +1442,112 @@ class TranslateApp:
             tf = self._with_retry(self._make_translate_fn(backend, params))
             done, failed, warns = [], [], []
             total = len(files)
-            for i, src in enumerate(files, 1):
-                if self.cancel_requested:
-                    break
-                if not self._wait_if_paused():
-                    break
-                t_file = time.time()
-                self.q.put(("batch_file", (src, "running")))
-                try:
-                    try:
-                        with open(src, encoding="utf-8") as f:
-                            text = f.read()
-                    except UnicodeDecodeError:
-                        with open(src, encoding="utf-8-sig") as f:
-                            text = f.read()
-                except Exception as e:
-                    log.error("批量读取失败: %s | %s", src, e)
-                    failed.append("%s：读取失败：%s" % (os.path.basename(src), e))
-                    self.q.put(("batch_file", (src, "failed")))
-                    self.q.put(("batch_progress", (i, total)))
-                    continue
-                try:
-                    dst = preserve_translate(text, tf)
-                except Exception as e:
-                    log.error("批量翻译失败: %s | %s", src, e)
-                    failed.append("%s：翻译失败：%s" % (os.path.basename(src), e))
-                    self.q.put(("batch_file", (src, "failed")))
-                    self.q.put(("batch_progress", (i, total)))
-                    continue
-                try:
-                    stem, ext = os.path.splitext(os.path.basename(src))
-                    out = os.path.join(os.path.dirname(src), "%s-%s翻译%s" % (stem, lang, ext))
-                    with open(out, "w", encoding="utf-8") as f:
-                        f.write(dst)
-                    done.append(out)
-                    sn, dn = segment_counts(text, dst)
-                    if sn != dn:
-                        warns.append("%s：段落结构异常（原文 %d 段 / 译文 %d 段）"
-                                     % (os.path.basename(src), sn, dn))
-                        self.q.put(("batch_file", (src, "warn")))
-                    else:
-                        self.q.put(("batch_file", (src, "done")))
-                except Exception as e:
-                    log.error("批量写入失败: %s | %s", out, e)
-                    failed.append("%s：写入失败：%s" % (os.path.basename(src), e))
-                    self.q.put(("batch_file", (src, "failed")))
-                self.q.put(("batch_progress", (i, total)))
-                if self.cancel_requested:
-                    break
-                log.info("批量文件完成: %s → %s, 耗时=%.1fs",
-                         os.path.basename(src), os.path.basename(out),
-                         time.time() - t_file)
-            log.info("批量翻译结束: 成功=%d, 结构异常=%d, 失败=%d, 停止=%s, 总耗时=%.1fs",
-                     len(done), len(warns), len(failed), bool(self.cancel_requested),
-                     time.time() - t0)
-            self._write_batch_report(files, done, failed, warns, bool(self.cancel_requested),
+            lock = threading.Lock()
+            ref = {"total": total, "i": 0, "n": 0}
+
+            def runner():
+                # 每个工作线程：取消/暂停检查后，取下一个文件处理
+                while True:
+                    if self.cancel_requested:
+                        break
+                    if not self._wait_if_paused():
+                        break
+                    with lock:
+                        if ref["i"] >= total:
+                            break
+                        src = files[ref["i"]]
+                        ref["i"] += 1
+                    self._batch_file_one(src, lang, tf, done, failed, warns, lock, ref)
+
+            n_par = self._effective_parallel(backend)
+            threads = [threading.Thread(target=runner, daemon=True)
+                       for _ in range(max(1, n_par))]
+            for th in threads:
+                th.start()
+            for th in threads:
+                th.join()
+            stopped = bool(self.cancel_requested)
+            log.info("批量翻译结束: 成功=%d, 结构异常=%d, 失败=%d, 停止=%s, 并行=%d, 总耗时=%.1fs",
+                     len(done), len(warns), len(failed), stopped, n_par, time.time() - t0)
+            self._write_batch_report(files, done, failed, warns, stopped,
                                      total, backend, params, lang, time.time() - t0)
-            self.q.put(("batch_done", (done, failed, bool(self.cancel_requested), total, warns)))
+            self.q.put(("batch_done", (done, failed, stopped, total, warns)))
         except Exception as e:
             log.error("批量翻译异常: %s", e, exc_info=True)
             self.q.put(("batch_error", str(e)))
+
+    def _batch_file_one(self, src, lang, tf, done, failed, warns, lock, ref):
+        """处理单个批量文件：读取→翻译→写盘→登记进度。串行/并行共用。"""
+        t_file = time.time()
+        self.q.put(("batch_file", (src, "running")))
+        text = None
+        try:
+            try:
+                with open(src, encoding="utf-8") as f:
+                    text = f.read()
+            except UnicodeDecodeError:
+                with open(src, encoding="utf-8-sig") as f:
+                    text = f.read()
+        except Exception as e:
+            log.error("批量读取失败: %s | %s", src, e)
+            with lock:
+                failed.append("%s：读取失败：%s" % (os.path.basename(src), e))
+            self.q.put(("batch_file", (src, "failed")))
+            self._batch_tick(ref, lock)
+            return
+        try:
+            dst = preserve_translate(text, tf)
+        except Exception as e:
+            log.error("批量翻译失败: %s | %s", src, e)
+            with lock:
+                failed.append("%s：翻译失败：%s" % (os.path.basename(src), e))
+            self.q.put(("batch_file", (src, "failed")))
+            self._batch_tick(ref, lock)
+            return
+        try:
+            stem, ext = os.path.splitext(os.path.basename(src))
+            out = os.path.join(os.path.dirname(src), "%s-%s翻译%s" % (stem, lang, ext))
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(dst)
+            with lock:
+                done.append(out)
+            sn, dn = segment_counts(text, dst)
+            if sn != dn:
+                with lock:
+                    warns.append("%s：段落结构异常（原文 %d 段 / 译文 %d 段）"
+                                 % (os.path.basename(src), sn, dn))
+                self.q.put(("batch_file", (src, "warn")))
+            else:
+                self.q.put(("batch_file", (src, "done")))
+        except Exception as e:
+            log.error("批量写入失败: %s | %s", out, e)
+            with lock:
+                failed.append("%s：写入失败：%s" % (os.path.basename(src), e))
+            self.q.put(("batch_file", (src, "failed")))
+        self._batch_tick(ref, lock)
+        log.info("批量文件完成: %s → %s, 耗时=%.1fs",
+                 os.path.basename(src), os.path.basename(out),
+                 time.time() - t_file)
+
+    def _batch_tick(self, ref, lock):
+        """线程安全地把已处理数 +1 并上报进度。"""
+        with lock:
+            ref["n"] += 1
+            self.q.put(("batch_progress", (ref["n"], ref["total"])))
+
+    def _effective_parallel(self, backend):
+        if backend in API_BACKENDS:
+            return 1
+        try:
+            return max(1, min(int(self.parallel_var.get() or "1"), 8))
+        except Exception:
+            return 1
+
+    def retry_count(self):
+        try:
+            return max(1, int(self.retry_var.get() or "3"))
+        except Exception:
+            return 3
 
     def _default_export_path(self):
         """按「原文件名-xx翻译.原扩展名」生成导出路径（与原文件同目录、同格式）。"""
@@ -1685,11 +1784,6 @@ class TranslateApp:
     def _start_translate(self, export=False):
         if self.busy:
             return
-        if self._pending_batch:
-            files = self._pending_batch
-            self._pending_batch = []
-            self._run_batch(files)
-            return
         text = self.in_text.get("1.0", "end-1c")
         if not text.strip():
             messagebox.showinfo("提示", "请输入待翻译文本")
@@ -1774,7 +1868,7 @@ class TranslateApp:
                 if not ok:
                     raise RuntimeError(raw)
                 return strip_fences(raw)
-        return self._with_retry(tf)
+        return tf
 
     def _make_reverse_translate_fn(self, backend=None, params=None):
         """构造反向翻译函数（译文→原文，交换源/目标语言）。"""
@@ -1833,7 +1927,8 @@ class TranslateApp:
             progress_path = export_path + ".progress.json"
             cache = self._load_progress(progress_path, text_hash)
         try:
-            tf = self._make_translate_fn(backend, params)
+            tf = self._with_retry(self._make_translate_fn(backend, params),
+                                  self.retry_count())
 
             def progress_cb(done, total):
                 if self.cancel_requested:
@@ -1920,14 +2015,20 @@ class TranslateApp:
                     continue
                 if kind == "batch_progress":
                     cur, batch_total = payload
-                    self.status_var.set("批量翻译中… %d/%d" % (cur, batch_total))
+                    el = time.time() - getattr(self, "_batch_t0", time.time())
+                    cur_f = getattr(self, "_batch_current", "")
+                    txt = "批量翻译 %d/%d · %s · 已用 %.0fs" % (
+                        cur, batch_total, cur_f or "准备中", el)
+                    self.status_var.set(txt)
                     if self.batch_status_var is not None:
-                        self.batch_status_var.set("翻译中 %d/%d" % (cur, batch_total))
+                        self.batch_status_var.set(txt)
                     self._show_progress(batch_total, cur)
                     continue
                 if kind == "batch_file":
                     src, status = payload
                     self._update_batch_item(src, status)
+                    if status == "running":
+                        self._batch_current = os.path.basename(src)
                     continue
                 if kind == "done":
                     self.out_text.delete("1.0", "end")

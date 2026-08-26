@@ -147,6 +147,15 @@ def _desktop_path():
     return None
 
 
+def estimate_tokens(text):
+    """启发式 token 估算：CJK 约 0.7 token/字，英文约 1.3 token/词，其余标点空格少量计入。"""
+    cjk = len(re.findall(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]", text))
+    words = re.findall(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*", text)
+    ascii_len = sum(len(w) for w in words)
+    other = len(text) - cjk - ascii_len
+    return int(cjk * 0.7 + len(words) * 1.3 + other * 0.25)
+
+
 class TranslationCancelled(Exception):
     """用户点击取消时抛出，用于中止翻译。"""
     pass
@@ -1239,8 +1248,8 @@ class TranslateApp:
         win.title("批量文件队列（待配置）")
         self._init_batch_queue(self._pending_batch)
         if self.batch_status_var is not None:
-            self.batch_status_var.set("已加载 %d 个文件，配置好后点击「翻译」开始"
-                                      % len(self._pending_batch))
+            self.batch_status_var.set(self.batch_status_var.get()
+                                      + "，配置好后点击「翻译」开始")
         if self.batch_start_btn is not None:
             self.batch_start_btn.config(state="normal", text="翻译")
         for btn in (self.batch_pause_btn, self.batch_stop_btn):
@@ -1312,8 +1321,8 @@ class TranslateApp:
         win = tk.Toplevel(self.root)
         win.title("批量文件队列")
         win.configure(bg=BG)
-        win.geometry("900x540")
-        win.minsize(680, 420)
+        win.geometry("980x560")
+        win.minsize(760, 440)
         try:
             win.transient(self.root)
         except Exception:
@@ -1322,11 +1331,15 @@ class TranslateApp:
         top.pack(fill="both", expand=True, padx=10, pady=(10, 4))
         inner = ttk.Frame(top)
         inner.pack(fill="both", expand=True, padx=6, pady=6)
-        tree = ttk.Treeview(inner, columns=("status",), show="tree headings",
-                            selectmode="none", height=10)
+        tree = ttk.Treeview(inner, columns=("chars", "tokens", "status"),
+                            show="tree headings", selectmode="none", height=10)
         tree.heading("#0", text="文件")
+        tree.heading("chars", text="字符数")
+        tree.heading("tokens", text="Token 估算")
         tree.heading("status", text="状态")
-        tree.column("#0", width=680, anchor="w")
+        tree.column("#0", width=560, anchor="w")
+        tree.column("chars", width=110, anchor="e")
+        tree.column("tokens", width=120, anchor="e")
         tree.column("status", width=130, anchor="center")
         tree.pack(side="left", fill="both", expand=True)
         sb = ttk.Scrollbar(inner, orient="vertical", command=tree.yview)
@@ -1337,6 +1350,8 @@ class TranslateApp:
         tree.tag_configure("done", foreground="#27ae60")
         tree.tag_configure("warn", foreground="#d68910")
         tree.tag_configure("failed", foreground="#c0392b")
+        tree.tag_configure("total", foreground="#7f8c8d",
+                           font=("Microsoft YaHei UI", 10, "bold"))
 
         bar = tk.Frame(win, bg=BG)
         bar.pack(fill="x", padx=10, pady=6)
@@ -1371,22 +1386,62 @@ class TranslateApp:
         self.batch_win = None
         self._pending_batch[:] = []
 
+    def _count_chars_tokens(self, src):
+        """统计单个文件字符数与估算 token 数；超大文件截断统计。结果缓存复用。"""
+        cached = getattr(self, "_batch_stats", {}).get(src)
+        if cached is not None:
+            return cached
+        text = ""
+        try:
+            with open(src, encoding="utf-8") as f:
+                text = f.read()
+        except UnicodeDecodeError:
+            try:
+                with open(src, encoding="utf-8-sig") as f:
+                    text = f.read()
+            except Exception:
+                return (0, 0, False)
+        except Exception:
+            return (0, 0, False)
+        truncated = False
+        if len(text) > 2_000_000:
+            text = text[:2_000_000]
+            truncated = True
+        stats = (len(text), estimate_tokens(text), truncated)
+        if not hasattr(self, "_batch_stats"):
+            self._batch_stats = {}
+        self._batch_stats[src] = stats
+        return stats
+
     def _init_batch_queue(self, files):
-        """初始化批量文件队列窗口，全部标记为待处理并显示。"""
+        """初始化批量文件队列窗口，全部标记为待处理并显示，含字符/token 统计与合计行。"""
         win = self._get_batch_window()
         try:
             win.deiconify()
             win.lift()
         except Exception:
             pass
-        if self.batch_status_var is not None:
-            self.batch_status_var.set("开始翻译 %d 个文件…" % len(files))
         for it in self.batch_tree.get_children():
             self.batch_tree.delete(it)
         self.batch_tree["height"] = min(10, len(files)) if files else 4
+        total_chars = total_tokens = 0
         for src in files:
+            chars, tokens, trunc = self._count_chars_tokens(src)
+            total_chars += chars
+            total_tokens += tokens
+            ctxt = "{:,}".format(chars) + ("*" if trunc else "")
             self.batch_tree.insert("", "end", iid=src, text=os.path.basename(src),
-                                   values=("待处理",), tags=("pending",))
+                                   values=(ctxt, "约 {:,}".format(tokens), "待处理"),
+                                   tags=("pending",))
+        if files:
+            self.batch_tree.insert("", "end", iid="__TOTAL__", text="合计",
+                                   values=("{:,}".format(total_chars),
+                                           "约 {:,}".format(total_tokens), "合计"),
+                                   tags=("total",))
+        if self.batch_status_var is not None:
+            self.batch_status_var.set(
+                "共 %d 个文件 · 总字符 %s · 估算 Token 约 %s"
+                % (len(files), "{:,}".format(total_chars), "{:,}".format(total_tokens)))
 
     def _update_batch_item(self, src, status):
         """更新某个文件的队列状态。status ∈ pending/running/done/warn/failed。"""
@@ -1396,9 +1451,12 @@ class TranslateApp:
                 "done": "done", "warn": "warn", "failed": "failed"}
         if src not in self.batch_tree.get_children():
             self.batch_tree.insert("", "end", iid=src, text=os.path.basename(src),
-                                   values=(labels[status],), tags=(tags[status],))
+                                   values=("", "", labels[status]), tags=(tags[status],))
         else:
-            self.batch_tree.item(src, values=(labels[status],), tags=(tags[status],))
+            cur = self.batch_tree.item(src, "values")
+            chars, tokens = (cur[0], cur[1]) if len(cur) >= 2 else ("", "")
+            self.batch_tree.item(src, values=(chars, tokens, labels[status]),
+                                 tags=(tags[status],))
 
     def _write_batch_report(self, files, done, failed, warns, stopped, total,
                             backend, params, lang, elapsed):
@@ -1420,6 +1478,25 @@ class TranslateApp:
         L.append("未处理   : %d" % (total - len(done) - len(failed)))
         L.append("总耗时   : %.1f 秒" % elapsed)
         L.append("")
+        try:
+            t_chars = t_tokens = 0
+            for sr in files:
+                c, t, _ = self._count_chars_tokens(sr)
+                t_chars += c
+                t_tokens += t
+            L.append("原文统计")
+            L.append("-" * 44)
+            L.append("总字符   : %s" % "{:,}".format(t_chars))
+            L.append("估算Token: 约 %s" % "{:,}".format(t_tokens))
+            L.append("文件明细 :")
+            for sr in files:
+                c, t, tr = self._count_chars_tokens(sr)
+                L.append("  %s" % os.path.basename(sr))
+                L.append("    字符 %s%s · 估算Token 约 %s"
+                         % ("{:,}".format(c), "*" if tr else "", "{:,}".format(t)))
+            L.append("")
+        except Exception as e:
+            log.error("批量报告原文统计失败: %s", e)
         L.append("成功文件"); L.append("-" * 44)
         L.extend(done if done else ["（无）"])
         L.append("")

@@ -1233,6 +1233,9 @@ class TranslateApp:
         if not files:
             messagebox.showinfo("批量翻译", "没有找到可翻译的文件。")
             return
+        # 去重：防止同一路径重复导致 Treeview iid 冲突
+        files = list(dict.fromkeys(files))
+        self._batch_total_iid = "__TOTAL_%x__" % (id(self) & 0xFFFFFF)  # 唯一合计行 id
         self._pending_batch[:] = files
         self._open_batch_pending()
         log.info("批量翻译待处理列表就绪并弹出窗口: %d 个文件", len(files))
@@ -1246,7 +1249,7 @@ class TranslateApp:
         except Exception:
             pass
         win.title("批量文件队列（待配置）")
-        self._init_batch_queue(self._pending_batch)
+        self._init_batch_queue(self._pending_batch, start_stats=True)
         if self.batch_status_var is not None:
             self.batch_status_var.set(self.batch_status_var.get()
                                       + "，配置好后点击「翻译」开始")
@@ -1257,41 +1260,54 @@ class TranslateApp:
                 btn.config(state="disabled")
 
     def _start_batch_now(self):
-        """批量窗口内的「翻译」按钮：正式启动本次批量翻译。"""
+        """批量窗口内的「翻译」按钮：先校验凭据，通过后才清空待翻译列表并启动。"""
         if self.busy:
             return
         if not self._pending_batch:
             messagebox.showinfo("提示", "没有待翻译文件")
             return
+        pre = self._preflight_batch()
+        if pre is None:
+            return  # 凭据校验失败：保留待翻译列表，不置灰「翻译」按钮
+        backend, params = pre
         if self.batch_start_btn is not None:
             self.batch_start_btn.config(state="disabled")
         files = list(self._pending_batch)
         self._pending_batch[:] = []
-        self._run_batch(files)
+        self._run_batch(files, backend=backend, params=params)
 
-    def _run_batch(self, files):
+    def _preflight_batch(self):
+        """批量启动前的凭据校验；返回 (backend, params)，校验失败弹窗并返回 None。"""
+        backend, params = self._collect_params()
+        if backend == "百度翻译" and (not params.get("appid") or not params.get("appkey")):
+            messagebox.showwarning("缺少凭据", "请填写百度翻译 APPID 和 密钥/API Key")
+            return None
+        if backend == "硅基流动" and not params.get("api_key"):
+            messagebox.showwarning("缺少凭据", "请填写硅基流动 API Key")
+            return None
+        if backend == "腾讯云机器翻译" and (not params.get("secret_id") or not params.get("secret_key")):
+            messagebox.showwarning("缺少凭据", "请填写腾讯云机器翻译的 SecretId 与 SecretKey")
+            return None
+        if backend == "阿里云机器翻译" and (not params.get("access_key_id") or not params.get("access_key_secret")):
+            messagebox.showwarning("缺少凭据", "请填写阿里云机器翻译的 AccessKey ID 与 AccessKey Secret")
+            return None
+        if backend == "彩云小译" and not params.get("token"):
+            messagebox.showwarning("缺少凭据", "请填写彩云小译访问令牌 Token")
+            return None
+        if backend.startswith(CUSTOM_PREFIX) and not params.get("api_key"):
+            messagebox.showwarning("缺少凭据", "请填写该自定义 OpenAI 平台的 API Key")
+            return None
+        return backend, params
+
+    def _run_batch(self, files, backend=None, params=None):
         if not files:
             messagebox.showinfo("提示", "未找到任何待翻译文件")
             return
-        backend, params = self._collect_params()
-        if backend == "百度翻译" and (not params["appid"] or not params["appkey"]):
-            messagebox.showwarning("缺少凭据", "请填写百度翻译 APPID 和 密钥/API Key")
-            return
-        if backend == "硅基流动" and not params["api_key"]:
-            messagebox.showwarning("缺少凭据", "请填写硅基流动 API Key")
-            return
-        if backend == "腾讯云机器翻译" and (not params["secret_id"] or not params["secret_key"]):
-            messagebox.showwarning("缺少凭据", "请填写腾讯云机器翻译的 SecretId 与 SecretKey")
-            return
-        if backend == "阿里云机器翻译" and (not params["access_key_id"] or not params["access_key_secret"]):
-            messagebox.showwarning("缺少凭据", "请填写阿里云机器翻译的 AccessKey ID 与 AccessKey Secret")
-            return
-        if backend == "彩云小译" and not params["token"]:
-            messagebox.showwarning("缺少凭据", "请填写彩云小译访问令牌 Token")
-            return
-        if backend.startswith(CUSTOM_PREFIX) and not params["api_key"]:
-            messagebox.showwarning("缺少凭据", "请填写该自定义 OpenAI 平台的 API Key")
-            return
+        if backend is None:
+            pre = self._preflight_batch()
+            if pre is None:
+                return
+            backend, params = pre
         lang = self.to_var.get().strip() or "中文"
         self.busy = True
         self.cancel_requested = False
@@ -1413,8 +1429,42 @@ class TranslateApp:
         self._batch_stats[src] = stats
         return stats
 
-    def _init_batch_queue(self, files):
-        """初始化批量文件队列窗口，全部标记为待处理并显示，含字符/token 统计与合计行。"""
+    def _parse_stat_cache(self, src):
+        """返回已缓存的 (字符, token, 是否截断)；未统计过返回 None。"""
+        return getattr(self, "_batch_stats", {}).get(src)
+
+    def _refresh_total_row(self, files):
+        """基于当前已缓存统计重建合计行；有未统计文件则显示占位并提示统计中。"""
+        tree = self.batch_tree
+        tot_iid = getattr(self, "_batch_total_iid", "__TOTAL__")
+        for it in tree.get_children(""):
+            if it == tot_iid:
+                tree.delete(it)
+        total_chars = total_tokens = 0
+        covered = True
+        for src in files:
+            st = self._parse_stat_cache(src)
+            if not st:
+                covered = False
+                break
+            total_chars += st[0]
+            total_tokens += st[1]
+        if files:
+            tc = "{:,}".format(total_chars) if covered else "--"
+            tt = "约 {:,}".format(total_tokens) if covered else "--"
+            tree.insert("", "end", iid=tot_iid, text="合计",
+                        values=(tc, tt, "合计"), tags=("total",))
+        if self.batch_status_var is not None:
+            if not covered:
+                self.batch_status_var.set("共 %d 个文件 · 统计中…" % len(files))
+            else:
+                self.batch_status_var.set(
+                    "共 %d 个文件 · 总字符 %s · 估算 Token 约 %s"
+                    % (len(files), "{:,}".format(total_chars), "{:,}".format(total_tokens)))
+
+    def _init_batch_queue(self, files, start_stats=False):
+        """初始化批量文件队列窗口，全部标记为待处理并显示。字符/token 用后台线程回填，
+        不在主线程逐个读文件，避免大目录卡死界面。"""
         win = self._get_batch_window()
         try:
             win.deiconify()
@@ -1424,24 +1474,30 @@ class TranslateApp:
         for it in self.batch_tree.get_children():
             self.batch_tree.delete(it)
         self.batch_tree["height"] = min(10, len(files)) if files else 4
-        total_chars = total_tokens = 0
         for src in files:
-            chars, tokens, trunc = self._count_chars_tokens(src)
-            total_chars += chars
-            total_tokens += tokens
-            ctxt = "{:,}".format(chars) + ("*" if trunc else "")
+            st = self._parse_stat_cache(src)
+            if st:
+                chars, tokens, trunc = st
+                ctxt = "{:,}".format(chars) + ("*" if trunc else "")
+                ttxt = "约 {:,}".format(tokens)
+            else:
+                ctxt, ttxt = "--", "--"
             self.batch_tree.insert("", "end", iid=src, text=os.path.basename(src),
-                                   values=(ctxt, "约 {:,}".format(tokens), "待处理"),
-                                   tags=("pending",))
-        if files:
-            self.batch_tree.insert("", "end", iid="__TOTAL__", text="合计",
-                                   values=("{:,}".format(total_chars),
-                                           "约 {:,}".format(total_tokens), "合计"),
-                                   tags=("total",))
-        if self.batch_status_var is not None:
-            self.batch_status_var.set(
-                "共 %d 个文件 · 总字符 %s · 估算 Token 约 %s"
-                % (len(files), "{:,}".format(total_chars), "{:,}".format(total_tokens)))
+                                   values=(ctxt, ttxt, "待处理"), tags=("pending",))
+        self._refresh_total_row(files)
+        if start_stats and files:
+            threading.Thread(target=self._batch_stat_worker,
+                             args=(list(files),), daemon=True).start()
+
+    def _batch_stat_worker(self, files):
+        """后台线程逐步统计字符/token，经队列回填行与合计行。"""
+        try:
+            for src in files:
+                chars, tokens, trunc = self._count_chars_tokens(src)
+                self.q.put(("batch_stat", (src, chars, tokens, trunc)))
+        except Exception as e:
+            log.error("批量统计后台线程异常: %s", e, exc_info=True)
+        self.q.put(("batch_stats_done", None))
 
     def _update_batch_item(self, src, status):
         """更新某个文件的队列状态。status ∈ pending/running/done/warn/failed。"""
@@ -1475,7 +1531,7 @@ class TranslateApp:
         L.append("成功     : %d" % len(done))
         L.append("结构异常 : %d" % len(warns))
         L.append("失败     : %d" % len(failed))
-        L.append("未处理   : %d" % (total - len(done) - len(failed)))
+        L.append("未处理   : %d" % (total - len(done) - len(warns) - len(failed)))
         L.append("总耗时   : %.1f 秒" % elapsed)
         L.append("")
         try:
@@ -1586,8 +1642,6 @@ class TranslateApp:
             out = os.path.join(os.path.dirname(src), "%s-%s翻译%s" % (stem, lang, ext))
             with open(out, "w", encoding="utf-8") as f:
                 f.write(dst)
-            with lock:
-                done.append(out)
             sn, dn = segment_counts(text, dst)
             if sn != dn:
                 with lock:
@@ -1595,6 +1649,8 @@ class TranslateApp:
                                  % (os.path.basename(src), sn, dn))
                 self.q.put(("batch_file", (src, "warn")))
             else:
+                with lock:
+                    done.append(out)
                 self.q.put(("batch_file", (src, "done")))
         except Exception as e:
             log.error("批量写入失败: %s | %s", out, e)
@@ -1771,40 +1827,44 @@ class TranslateApp:
             raise last
         return wrapped
 
-    def _load_progress(self, path, text_hash):
-        """读取断点进度文件；文本哈希一致才复用缓存。"""
+    def _load_progress(self, path, text_hash, ctx=""):
+        """读取断点进度文件；文本哈希与翻译上下文均一致才复用缓存。"""
         try:
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
-            if data.get("text_hash") == text_hash:
+            if data.get("text_hash") == text_hash and data.get("ctx") == ctx:
                 return data.get("cache", {})
         except Exception:
             pass
         return {}
 
-    def _save_progress(self, path, text_hash, cache):
+    def _save_progress(self, path, text_hash, cache, ctx=""):
         try:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({"text_hash": text_hash, "cache": cache},
+                json.dump({"text_hash": text_hash, "ctx": ctx, "cache": cache},
                           f, ensure_ascii=False)
         except Exception:
             pass
 
     def _enc_secret(self, value):
-        """加密敏感字段；加密失败返回空串（调用方回退明文）。"""
+        """加密敏感字段。加密失败时以「PLAIN:」前缀明文存储并告警，避免密钥静默丢失。"""
         if not value:
             return ""
         try:
             return secure_store.encrypt_text(value)
-        except Exception:
-            return ""
+        except Exception as e:
+            log.error("密钥加密失败，将以明文存储（安全降级）— 请尽快在支持 DPAPI 的 Windows 环境重新填写：%s", e)
+            return "PLAIN:" + value
 
     def _dec_secret(self, enc):
         if not enc:
             return ""
+        if enc.startswith("PLAIN:"):
+            return enc[len("PLAIN:"):]
         try:
             return secure_store.decrypt_text(enc) or ""
-        except Exception:
+        except Exception as e:
+            log.warning("密钥解密失败（密文可能已损坏或来自其它机器）：%s", e)
             return ""
 
     def _collect_params(self):
@@ -1999,25 +2059,40 @@ class TranslateApp:
         cache = None
         text_hash = ""
         progress_path = None
+        ctx = ""
         if export_path:
             text_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
             progress_path = export_path + ".progress.json"
-            cache = self._load_progress(progress_path, text_hash)
+            ctx = "to=%s|backend=%s|model=%s" % (
+                self.to_var.get().strip(), backend, params.get("model", ""))
+            cache = self._load_progress(progress_path, text_hash, ctx)
         try:
             tf = self._with_retry(self._make_translate_fn(backend, params),
                                   self.retry_count())
 
+            last_save = [0.0]
+
             def progress_cb(done, total):
                 if self.cancel_requested:
+                    if progress_path:
+                        self._save_progress(progress_path, text_hash, cache, ctx)
                     raise TranslationCancelled()
                 if progress_path:
-                    self._save_progress(progress_path, text_hash, cache)
+                    now = time.time()
+                    if now - last_save[0] >= 2.0:
+                        self._save_progress(progress_path, text_hash, cache, ctx)
+                        last_save[0] = now
                 self.q.put(("progress", (done, total)))
 
             dst = preserve_translate(text, tf, progress_cb, cache)
             if export_path:
-                with open(export_path, "w", encoding="utf-8") as f:
-                    f.write(dst)
+                try:
+                    with open(export_path, "w", encoding="utf-8") as f:
+                        f.write(dst)
+                except Exception as e:
+                    log.error("导出写盘失败: %s | %s", export_path, e, exc_info=True)
+                    self.q.put(("error", "导出文件写入失败：%s\n%s" % (export_path, e)))
+                    return
                 if progress_path and os.path.exists(progress_path):
                     os.remove(progress_path)
                 self.q.put(("done_export", (dst, export_path)))
@@ -2107,6 +2182,19 @@ class TranslateApp:
                     if status == "running":
                         self._batch_current = os.path.basename(src)
                     continue
+                if kind == "batch_stat":
+                    src, chars, tokens, trunc = payload
+                    if src in self.batch_tree.get_children():
+                        cur = self.batch_tree.item(src, "values")
+                        st = cur[2] if len(cur) >= 3 else "待处理"
+                        ctxt = "{:,}".format(chars) + ("*" if trunc else "")
+                        self.batch_tree.item(src, values=(ctxt, "约 {:,}".format(tokens), st))
+                    continue
+                if kind == "batch_stats_done":
+                    tot_iid = getattr(self, "_batch_total_iid", "__TOTAL__")
+                    fl = [i for i in self.batch_tree.get_children("") if i != tot_iid]
+                    self._refresh_total_row(fl)
+                    continue
                 if kind == "done":
                     self.out_text.delete("1.0", "end")
                     self.out_text.insert("1.0", payload)
@@ -2128,6 +2216,7 @@ class TranslateApp:
                             "是否存在内容丢失。" % (sn, dn))
                     else:
                         self.status_var.set("翻译完成（结构校验通过）")
+                    continue
                 elif kind == "cancelled":
                     self.status_var.set("已取消（进度已保存，可再次翻译续传）")
                 elif kind == "error":
@@ -2148,6 +2237,8 @@ class TranslateApp:
                     else:
                         self.status_var.set("获取模型失败")
                         messagebox.showerror("获取模型失败", models)
+                    # 连接测试的辅助结果，不在此复位 busy（真正终点是 conn_result）
+                    continue
                 elif kind == "batch_done":
                     done, failed, stopped, total, warns = payload
                     self.out_text.delete("1.0", "end")
@@ -2155,7 +2246,7 @@ class TranslateApp:
                     lines += ["结构异常：%s" % w for w in warns]
                     lines += ["失败：%s" % m for m in failed]
                     if stopped:
-                        remaining = total - len(done) - len(failed)
+                        remaining = total - len(done) - len(warns) - len(failed)
                         lines.append("已停止：剩余 %d 个文件未处理" % remaining)
                     self.out_text.insert("1.0", "\n".join(lines) or "（无输出）")
                     if stopped:
@@ -2173,7 +2264,7 @@ class TranslateApp:
                             msg.append("-" * 30)
                             msg += ["失败 %d 个：" % len(failed)]
                             msg += failed
-                        remaining = total - len(done) - len(failed)
+                        remaining = total - len(done) - len(warns) - len(failed)
                         if remaining:
                             msg.append("-" * 30)
                             msg.append("另有 %d 个文件未处理。" % remaining)

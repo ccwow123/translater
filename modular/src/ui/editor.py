@@ -597,6 +597,8 @@ class BidirectionalEditor(tk.Toplevel):
             self.q.put(("seg_done", (self._find_index(seg), dst)))
         except Exception as e:
             self.q.put(("seg_error", (self._find_index(seg), str(e))))
+        finally:
+            self.q.put(("all_done", None))
 
     def _worker_all(self, todo, backend, params):
         try:
@@ -609,6 +611,8 @@ class BidirectionalEditor(tk.Toplevel):
                     self.q.put(("seg_error", (self._find_index(seg), str(e))))
         except Exception as e:
             self.q.put(("error", str(e)))
+        finally:
+            self.q.put(("all_done", None))
 
     # ---- 反向翻译（译文 → 原文）----
     def _reverse_translate(self, seg):
@@ -642,6 +646,8 @@ class BidirectionalEditor(tk.Toplevel):
             self.q.put(("src_done", (self._find_index(seg), src)))
         except Exception as e:
             self.q.put(("src_error", (self._find_index(seg), str(e))))
+        finally:
+            self.q.put(("all_done", None))
 
     def _worker_reverse_all(self, todo, backend, params):
         try:
@@ -654,6 +660,8 @@ class BidirectionalEditor(tk.Toplevel):
                     self.q.put(("src_error", (self._find_index(seg), str(e))))
         except Exception as e:
             self.q.put(("error", str(e)))
+        finally:
+            self.q.put(("all_done", None))
 
     def _poll(self):
         try:
@@ -666,6 +674,8 @@ class BidirectionalEditor(tk.Toplevel):
                         self.cards[index]["dst_text"].insert("1.0", dst)
                         self.segments[index]["dst"] = dst
                     self.status_var.set("翻译完成")
+                    # 段级结果，不在此复位 busy；整批由 all_done 统一复位
+                    continue
                 elif kind == "src_done":
                     index, src = payload
                     if 0 <= index < len(self.cards):
@@ -673,17 +683,22 @@ class BidirectionalEditor(tk.Toplevel):
                         self.cards[index]["src_text"].insert("1.0", src)
                         self.segments[index]["src"] = src
                     self.status_var.set("反向翻译完成")
+                    continue
                 elif kind == "seg_error":
                     index, err = payload
                     self.status_var.set("翻译失败")
                     messagebox.showerror("翻译失败", "段 %d：%s" % (index + 1, err))
+                    continue
                 elif kind == "src_error":
                     index, err = payload
                     self.status_var.set("反向翻译失败")
                     messagebox.showerror("反向翻译失败", "段 %d：%s" % (index + 1, err))
+                    continue
                 elif kind == "error":
                     self.status_var.set("翻译失败")
                     messagebox.showerror("翻译失败", payload)
+                elif kind == "all_done":
+                    self.status_var.set(self.status_var.get())
                 self.busy = False
         except queue.Empty:
             pass
@@ -714,6 +729,10 @@ class BidirectionalEditor(tk.Toplevel):
             filetypes=[("Markdown", "*.md"), ("文本文件", "*.txt"), ("所有文件", "*.*")])
         if not path:
             return
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:
+            messagebox.showerror("保存失败", "无法写入文件：%s\n%s" % (path, e))
+            return
         self.status_var.set("已保存/导出: %s" % os.path.basename(path))

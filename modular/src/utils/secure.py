@@ -14,6 +14,12 @@ class DATA_BLOB(ctypes.Structure):
     _fields_ = [("cbData", wintypes.DWORD),
                 ("pbData", ctypes.POINTER(ctypes.c_byte))]
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 持有输入缓冲区对象，防止 CryptProtectData/CryptUnprotectData 读取时
+        # ctypes 缓冲区被 GC 提前回收，产生 use-after-free（悬垂指针）。
+        self._keep = []
+
 
 try:
     _crypt32 = ctypes.windll.crypt32
@@ -25,7 +31,9 @@ except Exception:
 
 def _blob_from_bytes(data):
     buf = ctypes.create_string_buffer(data, len(data))
-    return DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte)))
+    blob = DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_byte)))
+    blob._keep.append(buf)  # 与 blob 同生命周期，避免悬垂指针
+    return blob
 
 
 def _bytes_from_blob(blob):

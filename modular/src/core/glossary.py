@@ -15,29 +15,30 @@ def load_glossary(glossary_path, limit=8):
     if not glossary_path or not os.path.exists(glossary_path):
         return []
     pairs = []
-    for line in open(glossary_path, encoding="utf-8"):
-        line = line.rstrip("\n")
-        if not line or line.startswith("|") is False and "→" not in line:
-            continue
-        # 表格行
-        if line.startswith("|"):
-            cells = [c.strip() for c in line.strip("|").split("|")]
-            # 跳过表头/分隔行
-            if len(cells) < 4:
+    with open(glossary_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line or line.startswith("|") is False and "→" not in line:
                 continue
-            if any(c in ("序号", "日文原标题", "id", "---") for c in cells):
-                continue
-            cells = [c for c in cells if c and c not in ("---",)]
-            if len(cells) >= 2:
-                src, tgt = cells[-2], cells[-1]
-                if src and tgt and src != tgt:
-                    pairs.append((src, tgt))
-        else:
-            m = re.match(r"^(.*?)\s*[→>]\s*(.*)$", line)
-            if m:
-                s, t = m.group(1).strip(), m.group(2).strip()
-                if s and t:
-                    pairs.append((s, t))
+            # 表格行
+            if line.startswith("|"):
+                cells = [c.strip() for c in line.strip("|").split("|")]
+                # 跳过表头/分隔行
+                if len(cells) < 4:
+                    continue
+                if any(c in ("序号", "日文原标题", "id", "---") for c in cells):
+                    continue
+                cells = [c for c in cells if c and c not in ("---",)]
+                if len(cells) >= 2:
+                    src, tgt = cells[-2], cells[-1]
+                    if src and tgt and src != tgt:
+                        pairs.append((src, tgt))
+            else:
+                m = re.match(r"^(.*?)\s*[→>]\s*(.*)$", line)
+                if m:
+                    s, t = m.group(1).strip(), m.group(2).strip()
+                    if s and t:
+                        pairs.append((s, t))
     return pairs[:limit]
 
 

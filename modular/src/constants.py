@@ -6,16 +6,16 @@
 
 import os
 
-# 界面配色
-BG = "#f4f6fb"            # 窗口背景
-FG = "#2d3436"            # 主文字
+# 界面配色（与 ttkbootstrap nord-light 主题协调）
+BG = "#eceff4"            # 窗口背景
+FG = "#2e3440"            # 主文字
 MUTED = "#7f8c9b"         # 次要文字
-ACCENT = "#2f6fed"        # 主色（蓝）
+ACCENT = "#2f6fed"        # 主色（品牌蓝）
 ACCENT_DARK = "#2456c4"   # 主色深（悬停）
 ACCENT_LIGHT = "#eaf0fe"  # 主色浅（选中/悬停背景）
-BORDER = "#d5dbe8"        # 边框
+BORDER = "#c6c9cd"        # 边框
 HEADER_BG = "#1f2d3d"     # 顶栏深色
-STATUS_BG = "#eef1f7"     # 状态栏背景
+STATUS_BG = "#e4e7ec"     # 状态栏背景
 
 # 目标语言代码 → 中文名（用于导出文件名，如 article-中文翻译.md）
 LANG_NAMES = {"zh": "中文", "en": "英文", "ja": "日文", "jp": "日文",

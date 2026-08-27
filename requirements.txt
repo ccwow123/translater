@@ -1,10 +1,12 @@
 # 多后端文本翻译工具 —— 依赖清单
 #
-# 本项目不依赖任何第三方 pip 包，全部使用 Python 标准库：
-#   tkinter / ttk   图形界面
-#   ctypes + Win32  拖拽加载、DPAPI 密钥加密
-#   urllib          翻译后端 HTTP 请求
-#   hashlib / hmac  百度签名、腾讯云 TC3、阿里云 HMAC-SHA1
+# 图形界面基于 ttkbootstrap（现代扁平主题），其余全部使用 Python 标准库：
+#   ttkbootstrap     现代主题（nord-light），依赖 pillow
+#   tkinterdnd2      拖拽加载文件（可选，缺失时自动回退）
+#   ctypes + Win32   拖拽加载、DPAPI 密钥加密
+#   urllib           翻译后端 HTTP 请求
+#   hashlib / hmac   百度签名、腾讯云 TC3、阿里云 HMAC-SHA1
 #   其余             标准库（json / logging / threading / re / os 等）
 
 python>=3.8
+ttkbootstrap>=1.10

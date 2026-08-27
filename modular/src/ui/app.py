@@ -68,7 +68,7 @@ from src.constants import (BG, FG, MUTED, ACCENT, ACCENT_DARK, ACCENT_LIGHT,
                                   BASE_BACKENDS, CUSTOM_PREFIX, CONFIG_PATH,
                                   LLM_BACKENDS, API_BACKENDS, GROUP_LLM, GROUP_API,
                                   build_system_prompt, strip_fences)
-from src.ui.theme import StyleKit
+from src.ui.theme import StyleKit, LIGHT_THEMES, DARK_THEMES
 from src.ui.editor import BidirectionalEditor
 from src.backends.baidu import translate_one, ENDPOINTS as BAIDU_ENDPOINTS
 from src.backends import openai_compat
@@ -78,6 +78,7 @@ from src.backends.alicloud import translate_one as alicloud_translate_one
 from src.backends.caiyun import translate_one as caiyun_translate_one
 from src.core.preserve import preserve_translate, segment_counts
 from src.ui import wordalign as wa
+from src.utils.fsio import write_json_atomic
 import src.utils.secure as secure_store
 
 
@@ -243,17 +244,19 @@ class TranslateApp:
 
     # ------------------------------------------------------------ UI
     def _build_ui(self):
-        kit = StyleKit(self.root)
+        self.kit = StyleKit(self.root)
         pad = {"padx": 12, "pady": 6}
 
         # 顶栏
         header = tk.Frame(self.root, bg=HEADER_BG, height=58)
+        header._keep_bg = True   # 深色顶栏不参与皮肤换色
         header.pack(fill="x")
         header.pack_propagate(False)
         tk.Label(header, text="多后端文本翻译工具", bg=HEADER_BG, fg="#ffffff",
                  font=("Microsoft YaHei UI", 15, "bold")).pack(side="left", padx=16)
         tk.Label(header, text="LLM：硅基流动 · LM Studio · 自定义  ｜  专用翻译：百度 · 腾讯云 · 阿里云 · 彩云小译",
                  bg=HEADER_BG, fg="#b9c6e8", font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(6, 0))
+        ttk.Button(header, text="皮肤", command=self._open_theme).pack(side="right", padx=(0, 8), pady=13)
         ttk.Button(header, text="使用说明", command=self._open_usage,
                    style="Accent.TButton").pack(side="right", padx=16, pady=13)
 
@@ -360,7 +363,7 @@ class TranslateApp:
         sys_frame = ttk.LabelFrame(config_row, text="系统提示词（翻译角色设定，LLM 后端生效）")
         sys_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
         self.sys_text = tk.Text(sys_frame, wrap="word", height=3, font=("Microsoft YaHei UI", 9))
-        kit.style_text(self.sys_text, font=("Microsoft YaHei UI", 9))
+        self.kit.style_text(self.sys_text, font=("Microsoft YaHei UI", 9))
         self.sys_text.pack(fill="both", expand=True, padx=6, pady=(6, 2))
         # 未手动编辑时，系统提示词随源/目标语言动态生成；编辑过则用用户自定义内容
         self._sys_dirty = False
@@ -387,7 +390,7 @@ class TranslateApp:
         in_frame = ttk.LabelFrame(mid, text="输入文本")
         in_frame.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
         self.in_text = tk.Text(in_frame, wrap="word", height=9, font=("Microsoft YaHei UI", 10))
-        kit.style_text(self.in_text)
+        self.kit.style_text(self.in_text)
         self._link_tag("in")
         self.in_text.pack(fill="both", expand=True, padx=6, pady=6)
 
@@ -407,7 +410,7 @@ class TranslateApp:
         out_frame = ttk.LabelFrame(mid, text="输出译文")
         out_frame.grid(row=2, column=0, sticky="nsew", padx=2, pady=2)
         self.out_text = tk.Text(out_frame, wrap="word", height=9, font=("Microsoft YaHei UI", 10))
-        kit.style_text(self.out_text)
+        self.kit.style_text(self.out_text)
         self._link_tag("out")
         self.out_text.pack(fill="both", expand=True, padx=6, pady=6)
         ttk.Button(out_frame, text="保存到文件", command=self._save_file).pack(anchor="e", padx=6, pady=6)
@@ -676,6 +679,7 @@ class TranslateApp:
             "backend": self.backend_var.get(),
             "from": self.from_var.get(),
             "to": self.to_var.get(),
+            "theme": StyleKit.current,
             "max_tokens": self.max_tokens_var.get(),
             "system": self._get_system_prompt(),
             "baidu": {
@@ -721,15 +725,13 @@ class TranslateApp:
     def _persist_models(self):
         """把各后端模型列表静默写入配置（获取模型后自动保存）。"""
         try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(self._collect_config(), f, ensure_ascii=False, indent=1)
+            write_json_atomic(CONFIG_PATH, self._collect_config())
         except Exception:
             pass
 
     def _save_config(self):
         try:
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(self._collect_config(), f, ensure_ascii=False, indent=1)
+            write_json_atomic(CONFIG_PATH, self._collect_config())
             self.status_var.set("配置已保存（API Key 已加密）: %s" % CONFIG_PATH)
             log.info("配置已保存: %s", CONFIG_PATH)
         except Exception as e:
@@ -749,6 +751,9 @@ class TranslateApp:
         log.info("配置已加载: %s (from=%s, to=%s, backend=%s, 自定义平台=%d)",
                  CONFIG_PATH, cfg.get("from"), cfg.get("to"),
                  cfg.get("backend"), len(cfg.get("custom_platforms") or []))
+        theme = cfg.get("theme")
+        if theme and theme in (LIGHT_THEMES + DARK_THEMES) and theme != StyleKit.current:
+            self.kit.apply_theme(theme)
         if cfg.get("from"):
             self.from_var.set(LANG_NAMES.get(cfg["from"], cfg["from"]))
         if cfg.get("to"):
@@ -855,8 +860,7 @@ class TranslateApp:
                 with open(CONFIG_PATH, encoding="utf-8") as f:
                     cfg = json.load(f)
             cfg["geometry"] = self.root.geometry()
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, ensure_ascii=False, indent=1)
+            write_json_atomic(CONFIG_PATH, cfg)
         except Exception:
             pass
 
@@ -873,6 +877,7 @@ class TranslateApp:
     def _manage_custom(self):
         """管理自定义 OpenAI 平台：新增 / 重命名 / 编辑 / 删除（美化版）。"""
         dlg = tk.Toplevel(self.root)
+        dlg._keep_bg = True   # 固定白卡片+品牌蓝设计，不随皮肤换色
         dlg.title("管理自定义 OpenAI 平台")
         dlg.geometry("740x520")
         dlg.minsize(660, 460)
@@ -1158,6 +1163,81 @@ class TranslateApp:
         text.configure(state="normal")
         text.insert("1.0", USAGE_TEXT)
         text.configure(state="disabled")
+
+    # ------------------------------------------------------------ 皮肤切换
+    def _open_theme(self):
+        """弹出「选择皮肤」窗口：点击主题即时预览，保存后才关闭并写入配置。"""
+        self._theme_before = StyleKit.current
+        dlg = tk.Toplevel(self.root)
+        dlg.title("选择皮肤")
+        dlg.geometry("720x400")
+        dlg.minsize(680, 360)
+        dlg.configure(bg=BG)
+        dlg.transient(self.root)
+        dlg.grab_set()
+        dlg.protocol("WM_DELETE_WINDOW", lambda: self._cancel_theme(dlg))
+
+        header = tk.Frame(dlg, bg=HEADER_BG, height=52)
+        header._keep_bg = True
+        header.pack(fill="x")
+        header.pack_propagate(False)
+        tk.Label(header, text="选择皮肤", bg=HEADER_BG, fg="#ffffff",
+                 font=("Microsoft YaHei UI", 13, "bold")).pack(side="left", padx=16)
+
+        body = tk.Frame(dlg, bg=BG)
+        body.pack(fill="both", expand=True, padx=16, pady=12)
+
+        self._theme_btns = {}
+
+        def add_group(title, themes):
+            tk.Label(body, text=title, bg=BG, fg=MUTED,
+                     font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w", pady=(10, 4))
+            row = tk.Frame(body, bg=BG)
+            row.pack(fill="x")
+            for i, name in enumerate(themes):
+                b = ttk.Button(row, text=name,
+                               command=lambda n=name: self._preview_theme(n))
+                b.grid(row=0, column=i, padx=4, pady=2, sticky="ew")
+                row.grid_columnconfigure(i, weight=1)
+                self._theme_btns[name] = b
+
+        add_group("浅色", LIGHT_THEMES)
+        add_group("深色", DARK_THEMES)
+        self._theme_hint = tk.Label(body, text="", bg=BG, fg=MUTED,
+                                    font=("Microsoft YaHei UI", 9))
+        self._theme_hint.pack(anchor="w", pady=(14, 0))
+        self._refresh_theme_btns()
+
+        ops = tk.Frame(dlg, bg=BG)
+        ops.pack(side="bottom", fill="x", padx=16, pady=(0, 12))
+        ttk.Button(ops, text="取消",
+                   command=lambda: self._cancel_theme(dlg)).pack(side="right", padx=(8, 0))
+        ttk.Button(ops, text="保存皮肤", style="Accent.TButton",
+                   command=lambda: self._save_theme(dlg)).pack(side="right")
+
+    def _refresh_theme_btns(self):
+        """按当前主题刷新皮肤按钮高亮与提示文字。"""
+        for name, b in self._theme_btns.items():
+            b.configure(style="Accent.TButton" if name == StyleKit.current else "TButton")
+        if hasattr(self, "_theme_hint"):
+            self._theme_hint.configure(text="当前皮肤：%s" % StyleKit.current)
+
+    def _preview_theme(self, name):
+        """预览皮肤：立即应用但不写入配置、不关闭窗口。"""
+        self.kit.apply_theme(name)
+        self._refresh_theme_btns()
+
+    def _save_theme(self, dlg):
+        """保存当前预览的皮肤并关闭窗口。"""
+        self._save_config()
+        dlg.destroy()
+        self.status_var.set("皮肤已保存：%s" % StyleKit.current)
+
+    def _cancel_theme(self, dlg):
+        """取消：恢复进入对话框前的皮肤并关闭。"""
+        if StyleKit.current != self._theme_before:
+            self.kit.apply_theme(self._theme_before)
+        dlg.destroy()
 
     # ------------------------------------------------------------ 批量翻译
     def _batch_translate(self):

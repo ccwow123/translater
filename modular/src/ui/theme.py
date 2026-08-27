@@ -1,63 +1,110 @@
 # -*- coding: utf-8 -*-
-"""界面主题与样式：配色来自 src.constants，在此统一封装 ttk 样式与文本控件外观。
+"""界面主题与样式：基于 ttkbootstrap 现代主题，统一封装 ttk 样式与文本控件外观。
 
-原主窗口与双向编辑器各自重复定义，此处抽为 StyleKit 复用。
+原主窗口与双向编辑器各自重复定义，此处抽为 StyleKit 复用；皮肤切换也在此收敛。
 """
 
-from tkinter import ttk
+import tkinter as tk
 
-from src.constants import (BG, FG, ACCENT, ACCENT_DARK, ACCENT_LIGHT,
-                                  BORDER, HEADER_BG, MUTED)
+import ttkbootstrap as tb
+
+from src.constants import ACCENT, ACCENT_DARK, ACCENT_LIGHT, BORDER, FG
+
+
+# 皮肤选择列表（浅色 / 深色分组）
+LIGHT_THEMES = ["nord-light", "bootstrap-light", "catppuccin-light", "minty-light"]
+DARK_THEMES = ["nord-dark", "bootstrap-dark", "catppuccin-dark", "dracula-dark",
+               "tokyo-night-dark"]
+ALL_THEMES = LIGHT_THEMES + DARK_THEMES
 
 
 class StyleKit:
-    """统一管理 root 容器与 ttk 控件样式。"""
+    """统一管理 root 容器与 ttk 控件样式（ttkbootstrap 主题）。"""
 
     FONT = ("Microsoft YaHei UI", 10)
     FONT_BOLD = ("Microsoft YaHei UI", 10, "bold")
+    THEME = "nord-light"
+
+    _style = None
+    current = THEME
 
     def __init__(self, root):
         self.root = root
-        self.root.configure(bg=BG)
-        style = ttk.Style(root)
-        try:
-            style.theme_use("clam")
-        except Exception:
-            pass
-        style.configure(".", background=BG, foreground=FG,
-                        font=self.FONT)
-        style.configure("TFrame", background=BG)
-        style.configure("TLabel", background=BG, foreground=FG, font=self.FONT)
-        style.configure("TLabelframe", background=BG, bordercolor=BORDER,
-                        relief="solid", borderwidth=1)
-        style.configure("TLabelframe.Label", background=BG, foreground=ACCENT,
-                        font=self.FONT_BOLD)
-        style.configure("TButton", font=self.FONT,
-                        padding=(10, 5))
-        style.map("TButton",
-                  background=[("active", ACCENT_LIGHT)],
-                  bordercolor=[("active", ACCENT)])
-        style.configure("Accent.TButton", background=ACCENT, foreground="white",
-                        font=self.FONT_BOLD)
-        style.map("Accent.TButton",
-                  background=[("active", ACCENT_DARK), ("disabled", "#a9b7d6")],
-                  foreground=[("disabled", "#eef2fb")])
-        style.configure("TCombobox", fieldbackground="white", background="white",
-                        arrowcolor=ACCENT, bordercolor=BORDER,
-                        lightcolor=BORDER, darkcolor=BORDER,
-                        font=self.FONT)
-        style.map("TCombobox", fieldbackground=[("readonly", "white")])
-        style.configure("TEntry", fieldbackground="white", bordercolor=BORDER,
-                        lightcolor=BORDER, darkcolor=BORDER,
-                        font=self.FONT)
-        style.configure("TCheckbutton", background=BG, foreground=FG, font=self.FONT)
-        style.map("TCheckbutton", background=[("active", BG)])
+        if StyleKit._style is None:
+            StyleKit._style = tb.Style(theme=StyleKit.current)
+            self._setup_accent()
+        self.style = StyleKit._style
+
+    @classmethod
+    def _setup_accent(cls):
+        """品牌主色按钮（兼容现有 style="Accent.TButton" 调用）。"""
+        cls._style.configure("Accent.TButton",
+                             background=ACCENT, foreground="white",
+                             font=cls.FONT_BOLD)
+        cls._style.map("Accent.TButton",
+                       background=[("active", ACCENT_DARK),
+                                   ("disabled", ACCENT_LIGHT)],
+                       foreground=[("disabled", "#eef2fb")])
 
     def style_text(self, widget, padx=8, pady=8, font=FONT):
         """给 tk.Text 统一外观。"""
-        widget.configure(bg="white", fg=FG, insertbackground=ACCENT, relief="flat",
-                         highlightthickness=1, highlightbackground=BORDER,
-                         highlightcolor=ACCENT, padx=padx, pady=pady, font=font)
+        widget.configure(bg="white", fg=FG, insertbackground=ACCENT,
+                         relief="flat", highlightthickness=1,
+                         highlightbackground=BORDER, highlightcolor=ACCENT,
+                         padx=padx, pady=pady, font=font)
+
+    # ---------------------------------------------------------- 皮肤切换
+    def apply_theme(self, name):
+        """切换 ttkbootstrap 主题，并同步刷新全部 tk 原生控件配色。"""
+        StyleKit.current = name
+        self.style.theme_use(name)
+        self._setup_accent()
+        self.recolor(self.root)
+        # 同步模块级配色，供后续新建控件使用
+        import src.constants as C
+        c = self.style.colors
+        C.BG = c.bg
+        C.FG = c.fg
+        C.BORDER = c.border
+        C.STATUS_BG = c.bg
+
+    def recolor(self, widget=None):
+        """遍历 widget 树，把 tk 原生控件刷成当前主题色。"""
+        widget = widget or self.root
+        c = self.style.colors
+        dark = "dark" in self.style.theme.name
+        text_bg = "#1e222a" if dark else "white"
+        for w in self._walk(widget):
+            if self._keep(w):
+                continue
+            if isinstance(w, tk.Frame):
+                w.configure(bg=c.bg)
+            elif isinstance(w, tk.Label):
+                w.configure(bg=c.bg, fg=c.fg)
+            elif isinstance(w, tk.Text):
+                w.configure(bg=text_bg, fg=c.fg, insertbackground=c.primary,
+                            highlightbackground=c.border, highlightcolor=c.primary)
+            elif isinstance(w, tk.Canvas):
+                w.configure(bg=c.bg)
+            elif isinstance(w, tk.Button):
+                w.configure(bg=c.bg, fg=c.fg, activebackground=c.bg,
+                            activeforeground=c.fg)
+
+    @staticmethod
+    def _walk(widget):
+        yield widget
+        for child in widget.winfo_children():
+            yield from StyleKit._walk(child)
+
+    @staticmethod
+    def _keep(widget):
+        """祖先链上存在 _keep_bg 标记（如深色顶栏）则跳过换色。"""
+        p = widget
+        while p is not None:
+            if getattr(p, "_keep_bg", False):
+                return True
+            p = p.master
+        return False
 
 
-__all__ = ["StyleKit", "HEADER_BG", "MUTED"]
+__all__ = ["StyleKit", "LIGHT_THEMES", "DARK_THEMES", "ALL_THEMES"]

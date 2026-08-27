@@ -10,7 +10,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import tkinter as tk
-from tkinter import ttk
 
 from src.ui.app import TranslateApp
 
@@ -21,10 +20,6 @@ def main():
         root = TkinterDnD.Tk()
     except ImportError:
         root = tk.Tk()
-    try:
-        ttk.Style().theme_use("vista")
-    except Exception:
-        pass
     TranslateApp(root)
     root.mainloop()
 

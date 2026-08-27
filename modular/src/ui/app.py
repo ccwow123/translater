@@ -64,9 +64,10 @@ except Exception:
 
 from src.constants import (BG, FG, MUTED, ACCENT, ACCENT_DARK, ACCENT_LIGHT,
                                   BORDER, HEADER_BG, STATUS_BG, LANG_NAMES, LANG_OPTIONS,
-                                  LANG_CODE, BASE_BACKENDS, CUSTOM_PREFIX, CONFIG_PATH,
+                                  LANG_CODE, AUTO_LANG, SOURCE_LANG_OPTIONS,
+                                  BASE_BACKENDS, CUSTOM_PREFIX, CONFIG_PATH,
                                   LLM_BACKENDS, API_BACKENDS, GROUP_LLM, GROUP_API,
-                                  LLM_SYSTEM, build_system_prompt, strip_fences)
+                                  build_system_prompt, strip_fences)
 from src.ui.theme import StyleKit
 from src.ui.editor import BidirectionalEditor
 from src.backends.baidu import translate_one, ENDPOINTS as BAIDU_ENDPOINTS
@@ -263,7 +264,7 @@ class TranslateApp:
         self.backend_cb.pack(side="left", padx=4)
         self.backend_cb.bind("<<ComboboxSelected>>", self._on_backend_selected)
         ttk.Label(top, text="源语言:").pack(side="left", padx=(14, 2))
-        ttk.Combobox(top, textvariable=self.from_var, values=LANG_OPTIONS,
+        ttk.Combobox(top, textvariable=self.from_var, values=SOURCE_LANG_OPTIONS,
                      state="readonly", width=6).pack(side="left")
         ttk.Button(top, text="⇄", width=3, command=self._swap_langs).pack(side="left", padx=(6, 2))
         ttk.Label(top, text="目标语言:").pack(side="left", padx=(4, 2))
@@ -359,6 +360,10 @@ class TranslateApp:
         self.sys_text = tk.Text(sys_frame, wrap="word", height=3, font=("Microsoft YaHei UI", 9))
         kit.style_text(self.sys_text, font=("Microsoft YaHei UI", 9))
         self.sys_text.pack(fill="both", expand=True, padx=6, pady=(6, 2))
+        # 未手动编辑时，系统提示词随源/目标语言动态生成；编辑过则用用户自定义内容
+        self._sys_dirty = False
+        self._reset_system_prompt()
+        self.sys_text.bind("<<Modified>>", self._on_sys_modified)
         token_row = ttk.Frame(sys_frame)
         token_row.pack(fill="x", padx=6, pady=(0, 6))
         ttk.Label(token_row, text="最大输出token:").pack(side="left")
@@ -503,12 +508,24 @@ class TranslateApp:
         self.baidu_auth.set("apikey" if self.baidu_mode.get() == "llm" else "sign")
 
     # ------------------------------------------------------------ 系统提示词
+    def _on_sys_modified(self, event=None):
+        if self.sys_text.edit_modified():
+            self._sys_dirty = True
+            self.sys_text.edit_modified(False)
+
     def _get_system_prompt(self):
+        if not self._sys_dirty:
+            return build_system_prompt(self.from_var.get().strip() or AUTO_LANG,
+                                       self.to_var.get().strip() or "中文")
         return self.sys_text.get("1.0", "end-1c").strip()
 
     def _reset_system_prompt(self):
         self.sys_text.delete("1.0", "end")
-        self.sys_text.insert("1.0", LLM_SYSTEM)
+        self.sys_text.insert("1.0", build_system_prompt(
+            self.from_var.get().strip() or AUTO_LANG,
+            self.to_var.get().strip() or "中文"))
+        self.sys_text.edit_modified(False)
+        self._sys_dirty = False
 
     # ------------------------------------------------------------ 连接测试与模型获取
     def _backend_creds(self):
@@ -739,6 +756,8 @@ class TranslateApp:
         if cfg.get("system"):
             self.sys_text.delete("1.0", "end")
             self.sys_text.insert("1.0", cfg["system"])
+            self.sys_text.edit_modified(False)
+            self._sys_dirty = True
         b = cfg.get("baidu", {})
         if b.get("appid"):
             self.baidu_appid.set(b["appid"])
@@ -1740,6 +1759,9 @@ class TranslateApp:
         """交换源语言与目标语言的值。"""
         f = self.from_var.get().strip()
         t = self.to_var.get().strip()
+        if f == AUTO_LANG:
+            messagebox.showinfo("提示", "「自动检测」只能作为源语言，不能作为目标语言")
+            return
         self.from_var.set(t or "中文")
         self.to_var.set(f or "中文")
 
@@ -1980,7 +2002,9 @@ class TranslateApp:
                     raise RuntimeError(err)
                 return dst
         else:
-            sys_prompt = params.get("system", LLM_SYSTEM)
+            sys_prompt = params.get("system") or build_system_prompt(
+                LANG_NAMES.get(params.get("from"), params.get("from")),
+                LANG_NAMES.get(params.get("to"), params.get("to")))
 
             def tf(t):
                 ok, raw = openai_compat.chat_completion(

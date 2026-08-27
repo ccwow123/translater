@@ -172,6 +172,8 @@ class TranslateApp:
         self.q = queue.Queue()
         self.busy = False
         self.cancel_requested = False
+        self._op_seq = 0          # 单次翻译会话 id 计数器
+        self._active_op = 0       # 当前接收消息的会话 id（取消后会 +1，丢弃旧任务消息）
         self._pause_event = threading.Event()
         self._pause_event.set()
         self._pending_batch = []
@@ -1793,7 +1795,14 @@ class TranslateApp:
         if self.busy:
             self.cancel_requested = True
             self._pause_event.set()
-            self.status_var.set("正在取消…")
+            if str(self.cancel_btn.cget("state")) == "normal":
+                # 单次翻译：立即释放界面并丢弃旧任务后续消息（旧 worker 在下一块边界自然退出）
+                self._active_op += 1
+                self.busy = False
+                self.cancel_btn.config(state="disabled")
+                self.status_var.set("已取消")
+            else:
+                self.status_var.set("正在取消…")
 
     def _toggle_pause(self):
         """批量翻译暂停 / 继续切换（仅在文件边界真正挂起）。"""
@@ -1957,6 +1966,7 @@ class TranslateApp:
             if not export_path:
                 messagebox.showinfo("提示", "请先通过「从文件加载」选择要翻译的文件")
                 return
+        self._active_op = self._op_seq = self._op_seq + 1
         self.busy = True
         self.cancel_requested = False
         self.cancel_btn.config(state="normal")
@@ -1964,7 +1974,9 @@ class TranslateApp:
         model = params.get("model", "")
         log.info("开始翻译: backend=%s, from=%s, to=%s, model=%s, 文本长度=%d字符, 保留排版=是",
                  backend, params.get("from"), params.get("to"), model, len(text))
-        threading.Thread(target=self._worker, args=(backend, params, text, export_path), daemon=True).start()
+        threading.Thread(target=self._worker,
+                         args=(backend, params, text, export_path, self._active_op),
+                         daemon=True).start()
 
     def _make_translate_fn(self, backend=None, params=None):
         """根据当前后端配置构造翻译函数 tf(文本) -> 译文，失败抛异常。"""
@@ -2062,7 +2074,9 @@ class TranslateApp:
                 return strip_fences(raw)
         return self._with_retry(tf)
 
-    def _worker(self, backend, params, text, export_path=None):
+    def _worker(self, backend, params, text, export_path=None, op=None):
+        def send(kind, payload=None):
+            self.q.put((op, kind, payload))
         t0 = time.time()
         cache = None
         text_hash = ""
@@ -2081,7 +2095,7 @@ class TranslateApp:
             last_save = [0.0]
 
             def progress_cb(done, total):
-                if self.cancel_requested:
+                if self.cancel_requested or self._active_op != op:
                     if progress_path:
                         self._save_progress(progress_path, text_hash, cache, ctx)
                     raise TranslationCancelled()
@@ -2090,11 +2104,11 @@ class TranslateApp:
                     if now - last_save[0] >= 2.0:
                         self._save_progress(progress_path, text_hash, cache, ctx)
                         last_save[0] = now
-                self.q.put(("progress", (done, total)))
+                send("progress", (done, total))
 
             def block_cb(_i, tr):
                 # 每译完一个块即推送到主线程流式显示
-                self.q.put(("stream_block", tr))
+                send("stream_block", tr)
 
             dst = preserve_translate(text, tf, progress_cb, cache, block_cb)
             if export_path:
@@ -2103,25 +2117,25 @@ class TranslateApp:
                         f.write(dst)
                 except Exception as e:
                     log.error("导出写盘失败: %s | %s", export_path, e, exc_info=True)
-                    self.q.put(("error", "导出文件写入失败：%s\n%s" % (export_path, e)))
+                    send("error", "导出文件写入失败：%s\n%s" % (export_path, e))
                     return
                 if progress_path and os.path.exists(progress_path):
                     os.remove(progress_path)
-                self.q.put(("done_export", (dst, export_path)))
+                send("done_export", (dst, export_path))
             else:
-                self.q.put(("done", dst))
+                send("done", dst)
             sn, dn = segment_counts(text, dst)
-            self.q.put(("format_check", (sn, dn)))
+            send("format_check", (sn, dn))
             log.info("翻译完成: backend=%s, 原文=%d字符, 译文=%d字符, 耗时=%.1fs, 导出=%s",
                      backend, len(text), len(dst), time.time() - t0,
                      export_path or "否")
         except TranslationCancelled:
-            self.q.put(("cancelled", None))
+            send("cancelled")
             log.info("翻译被取消: backend=%s, 耗时=%.1fs", backend, time.time() - t0)
         except Exception as e:
             log.error("翻译失败: backend=%s, err=%s, 耗时=%.1fs",
                       backend, e, time.time() - t0, exc_info=True)
-            self.q.put(("error", str(e)))
+            send("error", str(e))
 
     # ------------------------------------------------------------ 拖拽文件
     def _enable_drag_drop(self):
@@ -2149,7 +2163,14 @@ class TranslateApp:
     def _poll(self):
         try:
             while True:
-                kind, payload = self.q.get_nowait()
+                item = self.q.get_nowait()
+                # 单次翻译消息为 (op, kind, payload)；op 与当前会话不符则丢弃（已取消/被新任务顶替）
+                if isinstance(item, tuple) and len(item) == 3 and item[0] != self._active_op:
+                    continue
+                if isinstance(item, tuple) and len(item) == 3:
+                    _op, kind, payload = item
+                else:
+                    kind, payload = item
                 if kind == "progress":
                     done, total = payload
                     self.status_var.set("翻译中… %d/%d" % (done, total))

@@ -102,8 +102,9 @@ def _translate_table_row(line, translate_fn):
     return "|".join(out)
 
 
-def translate_blocks(blocks, translate_fn, progress_cb=None, cache=None):
+def translate_blocks(blocks, translate_fn, progress_cb=None, cache=None, block_cb=None):
     """逐块翻译。progress_cb(done, total) 每块翻译前回调一次（可抛异常中止）；
+    block_cb(i, 译文) 每块译完后回调一次（含缓存命中），供流式显示；
     cache 为 {块索引: 译文} 字典，命中则跳过该块（用于断点续传）。"""
     out = []
     total = len(blocks)
@@ -112,6 +113,8 @@ def translate_blocks(blocks, translate_fn, progress_cb=None, cache=None):
             progress_cb(i, total)
         if cache is not None and str(i) in cache:
             out.append(cache[str(i)])
+            if block_cb:
+                block_cb(i, cache[str(i)])
             continue
         if btype == "code":
             translated = content
@@ -135,16 +138,18 @@ def translate_blocks(blocks, translate_fn, progress_cb=None, cache=None):
         out.append(translated)
         if cache is not None:
             cache[str(i)] = translated
+        if block_cb:
+            block_cb(i, translated)
     if progress_cb:
         progress_cb(total, total)
     return "\n".join(out)
 
 
-def preserve_translate(text, translate_fn, progress_cb=None, cache=None):
+def preserve_translate(text, translate_fn, progress_cb=None, cache=None, block_cb=None):
     """保持排版的翻译入口。translate_fn(文本) -> 译文。"""
     blocks = split_blocks(text)
     blocks = merge_paragraphs(blocks)
-    return translate_blocks(blocks, translate_fn, progress_cb, cache)
+    return translate_blocks(blocks, translate_fn, progress_cb, cache, block_cb)
 
 
 def segment_counts(src, dst):

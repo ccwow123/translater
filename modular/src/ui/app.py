@@ -413,20 +413,6 @@ class TranslateApp:
         self.status_var = tk.StringVar(value="就绪")
         tk.Label(status, textvariable=self.status_var, bg=STATUS_BG, fg=FG,
                  font=("Microsoft YaHei UI", 10, "bold"), anchor="w").pack(side="left", padx=12, pady=6)
-        self.progress_wrap = tk.Frame(status, bg=STATUS_BG)
-        pstyle = ttk.Style(self.root)
-        try:
-            pstyle.theme_use("clam")
-        except Exception:
-            pass
-        pstyle.configure("Green.Horizontal.TProgressbar", troughcolor="#ececec",
-                         background="#2ecc71", bordercolor="#2ecc71",
-                         lightcolor="#a8e6cf", darkcolor="#1e8449")
-        self.progress_bar = ttk.Progressbar(self.progress_wrap, style="Green.Horizontal.TProgressbar",
-                                            mode="indeterminate", maximum=100)
-        self.progress_bar.pack(side="left", fill="x", expand=True, pady=8)
-
-        
         self._enable_drag_drop()
         log.info("应用启动，日志路径: %s", LOG_PATH)
 
@@ -1325,7 +1311,6 @@ class TranslateApp:
         self.status_var.set("批量翻译 %d 个文件…（%s）" % (len(files), backend))
         log.info("批量翻译开始: %d 个文件, backend=%s, lang=%s, model=%s",
                  len(files), backend, lang, params.get("model", ""))
-        self._start_progress()
         self._init_batch_queue(files)
         threading.Thread(target=self._batch_worker,
                          args=(files, backend, params, lang), daemon=True).start()
@@ -1957,7 +1942,6 @@ class TranslateApp:
         model = params.get("model", "")
         log.info("开始翻译: backend=%s, from=%s, to=%s, model=%s, 文本长度=%d字符, 保留排版=是",
                  backend, params.get("from"), params.get("to"), model, len(text))
-        self._start_progress()
         threading.Thread(target=self._worker, args=(backend, params, text, export_path), daemon=True).start()
 
     def _make_translate_fn(self, backend=None, params=None):
@@ -2084,7 +2068,11 @@ class TranslateApp:
                         last_save[0] = now
                 self.q.put(("progress", (done, total)))
 
-            dst = preserve_translate(text, tf, progress_cb, cache)
+            def block_cb(_i, tr):
+                # 每译完一个块即推送到主线程流式显示
+                self.q.put(("stream_block", tr))
+
+            dst = preserve_translate(text, tf, progress_cb, cache, block_cb)
             if export_path:
                 try:
                     with open(export_path, "w", encoding="utf-8") as f:
@@ -2110,28 +2098,6 @@ class TranslateApp:
             log.error("翻译失败: backend=%s, err=%s, 耗时=%.1fs",
                       backend, e, time.time() - t0, exc_info=True)
             self.q.put(("error", str(e)))
-
-    def _start_progress(self):
-        """翻译开始时立即显示（绿色滚动动画，表示实时进行中）。"""
-        self.progress_bar.configure(mode="indeterminate")
-        self.progress_wrap.pack(side="right", fill="x", expand=True, padx=(8, 12), pady=6)
-        try:
-            self.progress_bar.start(25)
-        except Exception:
-            pass
-
-    def _show_progress(self, maximum, value):
-        if self.progress_bar.cget("mode") == "indeterminate":
-            self.progress_bar.stop()
-        self.progress_bar.configure(mode="determinate", maximum=maximum, value=value)
-        self.progress_wrap.pack(side="right", fill="x", expand=True, padx=(8, 12), pady=6)
-
-    def _hide_progress(self):
-        try:
-            self.progress_bar.stop()
-        except Exception:
-            pass
-        self.progress_wrap.pack_forget()
 
     # ------------------------------------------------------------ 拖拽文件
     def _enable_drag_drop(self):
@@ -2163,7 +2129,16 @@ class TranslateApp:
                 if kind == "progress":
                     done, total = payload
                     self.status_var.set("翻译中… %d/%d" % (done, total))
-                    self._show_progress(total, done)
+                    continue
+                if kind == "stream_block":
+                    tr = payload
+                    if not getattr(self, "_stream_started", False):
+                        self.out_text.delete("1.0", "end")
+                        self._stream_started = True
+                    else:
+                        self.out_text.insert("end", "\n")
+                    self.out_text.insert("end", tr)
+                    self.out_text.see("end")
                     continue
                 if kind == "batch_progress":
                     cur, batch_total = payload
@@ -2174,7 +2149,6 @@ class TranslateApp:
                     self.status_var.set(txt)
                     if self.batch_status_var is not None:
                         self.batch_status_var.set(txt)
-                    self._show_progress(batch_total, cur)
                     continue
                 if kind == "batch_file":
                     src, status = payload
@@ -2297,7 +2271,6 @@ class TranslateApp:
                     self.batch_pause_btn.config(state="disabled", text="暂停")
                     self.batch_stop_btn.config(state="disabled")
                 self._pause_event.set()
-                self._hide_progress()
         except queue.Empty:
             pass
         self.root.after(100, self._poll)

@@ -1,0 +1,16 @@
+# Python 编译产物
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# 运行时日志
+log/
+
+# 本地启动器配置（机器特定解释器路径）
+modular/launcher.ini
+
+# 本机桌面快捷方式（含本机路径）
+自由翻译器.lnk
+
+.mimosa

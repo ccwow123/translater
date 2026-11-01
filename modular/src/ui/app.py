@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""多后端文本翻译工具 —— 主窗口（Tkinter 可视化界面）。
+"""自由翻译器 —— 主窗口（Tkinter 可视化界面）。
 
 整合四个翻译后端：
   1. 百度翻译文本翻译
@@ -82,11 +82,11 @@ from src.utils.fsio import write_json_atomic
 import src.utils.secure as secure_store
 
 
-USAGE_TEXT = """《多功能翻译工具》使用说明
+USAGE_TEXT = """《自由翻译器》使用说明
 ==============================
 
 【一、功能简介】
-一款多功能翻译工具，支持自定义的翻译后端，可实时翻译、批量翻译、
+自由翻译器是一款多功能翻译工具，支持自定义的翻译后端，可实时翻译、批量翻译、
 编辑译文与反翻译并保存。
 
   · 翻译后端：百度翻译、硅基流动、LM Studio 本地、
@@ -166,7 +166,7 @@ class TranslationCancelled(Exception):
 class TranslateApp:
     def __init__(self, root):
         self.root = root
-        root.title("多后端文本翻译工具")
+        root.title("自由翻译器")
         root.geometry("1000x900")
         root.minsize(840, 680)
 
@@ -252,7 +252,7 @@ class TranslateApp:
         header._keep_bg = True   # 深色顶栏不参与皮肤换色
         header.pack(fill="x")
         header.pack_propagate(False)
-        tk.Label(header, text="多后端文本翻译工具", bg=HEADER_BG, fg="#ffffff",
+        tk.Label(header, text="自由翻译器", bg=HEADER_BG, fg="#ffffff",
                  font=("Microsoft YaHei UI", 15, "bold")).pack(side="left", padx=16)
         tk.Label(header, text="LLM：硅基流动 · LM Studio · 自定义  ｜  专用翻译：百度 · 腾讯云 · 阿里云 · 彩云小译",
                  bg=HEADER_BG, fg="#b9c6e8", font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(6, 0))
@@ -1142,7 +1142,7 @@ class TranslateApp:
     def _open_usage(self):
         """弹出「使用说明」窗口（可滚动大窗口）。"""
         win = tk.Toplevel(self.root)
-        win.title("使用说明 - 多功能翻译工具")
+        win.title("使用说明 - 自由翻译器")
         win.configure(bg=BG)
         win.geometry("680x620")
         win.minsize(520, 400)

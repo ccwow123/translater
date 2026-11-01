@@ -187,7 +187,7 @@ def _run_llm_batch(args, api_key, model, suffix):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="多后端批量翻译命令行工具")
+    ap = argparse.ArgumentParser(description="自由翻译器 · 批量翻译命令行工具")
     sub = ap.add_subparsers(dest="backend", required=True)
     sub.add_parser("baidu", help="百度翻译开放平台")
     sub.add_parser("siliconflow", help="硅基流动 API")
